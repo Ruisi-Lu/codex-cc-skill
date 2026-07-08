@@ -1,0 +1,11 @@
+codex-cc-skill
+Copyright 2026 Ruisi Lu
+
+This product includes software concepts derived from the OpenAI Codex
+Claude Code plugin (https://github.com/openai/codex-plugin-cc),
+Copyright 2026 OpenAI, licensed under the Apache License, Version 2.0.
+
+Specifically, the pre-commit review-gate mechanism — the ALLOW: / BLOCK:
+verdict contract adapted from that project's stop-review-gate — is
+reimplemented here against the standalone `codex` CLI. No source code from
+the upstream project is redistributed.

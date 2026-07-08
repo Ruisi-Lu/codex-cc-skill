@@ -1,0 +1,50 @@
+#!/bin/sh
+# codex-review gate — block a commit unless Codex approves the staged diff.
+#
+# Standalone: needs only the `codex` CLI (https://github.com/openai/codex) + git.
+#   Install:  npm install -g @openai/codex  &&  codex login
+#   Enable:   cp hooks/pre-commit .githooks/pre-commit && chmod +x .githooks/pre-commit
+#             git config core.hooksPath .githooks      # once per clone
+#   Bypass:   git commit --no-verify   OR   CODEX_GATE_BYPASS=1 git commit ...
+#
+# Fail-closed: if codex is missing/errors, the commit is blocked (not waved through).
+# The staged diff is fed to codex on STDIN and the prompt is a fixed literal — no
+# repository-derived value is ever passed through a shell (cf. codex-plugin-cc #447).
+#
+# Derived from the stop-review-gate in openai/codex-plugin-cc (Apache-2.0).
+
+[ "$CODEX_GATE_BYPASS" = "1" ] && exit 0
+
+# Nothing staged → nothing to review.
+git diff --cached --quiet && exit 0
+
+# Skip commits that aren't a plain edit-and-commit.
+gitdir=$(git rev-parse --git-dir)
+if [ -e "$gitdir/MERGE_HEAD" ] || [ -e "$gitdir/CHERRY_PICK_HEAD" ] || [ -e "$gitdir/REVERT_HEAD" ]; then
+  exit 0
+fi
+
+if ! command -v codex >/dev/null 2>&1; then
+  echo "[codex-review-gate] codex CLI not found — run 'npm i -g @openai/codex && codex login', or bypass with 'git commit --no-verify'." >&2
+  exit 1
+fi
+
+# Bound the review so a hang can't wedge every commit.
+codex="codex"
+command -v timeout >/dev/null 2>&1 && codex="timeout ${CODEX_GATE_TIMEOUT:-840} codex"
+
+msg="$gitdir/codex-review-gate.out"
+git diff --cached | $codex exec \
+  "You are a mandatory pre-commit code review gate. Review ONLY the staged diff provided on stdin. Your FIRST line MUST be exactly 'ALLOW: <reason>' or 'BLOCK: <reason>'. BLOCK only for real problems introduced by this diff (correctness bugs, security/authorization holes, data loss, broken error handling, resource/lifecycle leaks, clear regressions); when you BLOCK, list each finding after the first line as 'file:line — problem — fix'. Do not block on style, nitpicks, or pre-existing issues unrelated to this diff." \
+  -s read-only --skip-git-repo-check --color never -o "$msg" >/dev/null 2>&1
+
+if head -n 1 "$msg" 2>/dev/null | grep -q '^ALLOW:'; then
+  exit 0
+fi
+
+echo "[codex-review-gate] commit blocked — Codex review did not pass:" >&2
+echo >&2
+cat "$msg" >&2 2>/dev/null || echo "(no review output — codex may have failed; check 'codex login')" >&2
+echo >&2
+echo "Fix the issues and re-commit. Human override: git commit --no-verify  or  CODEX_GATE_BYPASS=1" >&2
+exit 1
