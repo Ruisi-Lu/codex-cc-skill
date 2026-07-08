@@ -1,6 +1,6 @@
 ---
 name: codex-review
-description: Run an independent Codex code review of local git changes via the `codex` CLI (`codex exec review`). Use when the user asks to review/check the diff or changes with Codex, wants a second opinion, or says "codex review"; and proactively after finishing a nontrivial code change, before committing, as a correctness gate. Standalone — needs only the `codex` CLI, no Claude Code plugin. Review-only: it surfaces findings and never auto-fixes.
+description: Run an independent Codex code review of local git changes via the `codex` CLI (`codex exec review`). Use when the user asks to review/check the diff or changes with Codex, wants a second opinion, or says "codex review"; and proactively after finishing a nontrivial code change, before committing, as a correctness gate. Standalone — needs only the `codex` CLI, no Claude Code plugin. Review-only, it surfaces findings and never auto-fixes.
 ---
 
 # Codex Review
