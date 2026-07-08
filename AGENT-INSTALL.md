@@ -1,40 +1,54 @@
-# Agent install guide
+# codex-cc-skill — Agent Install Runbook
 
-Deterministic, copy-paste steps for an **AI coding agent** (Claude Code, Cursor, …) to install this project into a target repository. A human can follow it too, but the [README](README.md) is friendlier. Every step is **idempotent** — safe to re-run.
+> **Written for an AI coding agent** (Claude Code, Cursor, …) installing into the **current repository** on the user's behalf. If you are that agent: do the steps in order, **never skip the approval gate in Step 2**, and **merge, never overwrite**. A human can follow the same steps by hand.
 
-> **Canonical URL of this guide** — hand it to an agent verbatim:
-> `https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/AGENT-INSTALL.md`
->
-> The steps below fetch each file from that same repo with `curl` — no clone required.
+## What you are installing
 
-You are installing up to three things:
+Everything is scoped to **this repo** — nothing global, nothing outside the repo. Up to two pieces:
 
-1. **The review skill** — lets the agent run `codex exec review` on the diff on demand.
-2. **A commit gate** *(optional)* — hard-blocks an unreviewed commit. Two flavors:
-   - **Claude Code `PreToolUse` hook** — fires when *Claude Code* runs `git commit`; the block reason returns to the model in-loop.
-   - **git `pre-commit` hook** — fires for commits from anywhere (terminal, other agents, IDE, CI).
+- **The review skill** → `.claude/skills/codex-review/SKILL.md` — lets the agent run `codex exec review` on the diff on demand.
+- **A commit gate** (pick one; both is fine) — same `ALLOW:` / `BLOCK:` Codex review, **fail-closed** (a missing or erroring `codex` blocks the commit):
+  - **2a · Claude Code hook** → `.claude/hooks/codex-commit-gate.sh` + a `PreToolUse` entry in `.claude/settings.json`. Fires when Claude Code runs `git commit`; the block reason returns to the model in-loop.
+  - **2b · git hook** → `.githooks/pre-commit` + `core.hooksPath`. Fires for commits from anywhere (terminal, other agents, IDE, CI).
 
-Both gates run the same `ALLOW:` / `BLOCK:` review and are **fail-closed** (a missing or erroring `codex` blocks the commit).
+**Source of truth for every file:** `https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/…` — or a local clone, if you're running in one.
 
----
+> ⚠️ **Commit pinning:** if the user's install prompt referenced this runbook at a **tag or commit SHA** instead of `main`, fetch **every file from that same ref** — never fall back to `main`. Pinning only means something if what the user reviewed is exactly what installs.
 
-## 0 · Preconditions
+> **Portability:** prefer your own **Read / Write / Edit** tools over the shell snippets below — they behave identically on macOS, Linux, WSL, and native Windows. The `curl` / `jq` / `chmod` lines are references, not requirements: on native Windows without a POSIX shell, fetch files with your tools, merge JSON by parsing it yourself, and skip `chmod`.
 
-Run every command below from the **target repo root** (the repository you want to protect). Fetching files requires `curl`.
+## Prerequisite (hard gate)
 
-The `codex` CLI must be installed and authenticated:
+`codex` must be installed and authenticated, or neither gate can run:
 
 ```bash
-command -v codex >/dev/null && codex --version || echo "MISSING: run 'npm i -g @openai/codex && codex login'"
+command -v codex >/dev/null && codex --version || echo "MISSING: npm i -g @openai/codex && codex login"
 ```
 
-If `codex` is missing or unauthenticated, tell the user to install and `codex login`, then **stop** — do not substitute a different review tool.
+If it's missing or unauthenticated, tell the user to install and `codex login`, then **stop** — do not substitute another review tool.
 
-> Prefer a local clone over `curl`? `git clone https://github.com/Ruisi-Lu/codex-cc-skill` and `cp` from it instead of the `curl` lines below.
+## Step 1 — Preflight (read-only, write nothing)
 
----
+Gather the current state before proposing anything:
 
-## 1 · Install the review skill
+1. Confirm the repo root: `git rev-parse --show-toplevel`.
+2. Read `.claude/settings.json` if it exists — note any existing `hooks.PreToolUse` and `permissions`. You will **merge** into them, never replace the file.
+3. Note what's already installed: `.claude/skills/codex-review/SKILL.md`? `.claude/hooks/codex-commit-gate.sh`? `git config --get core.hooksPath`?
+4. **Choose the gate.** You are a Claude Code agent, so default to **2a**. Also recommend **2b** if the user commits outside Claude Code (terminal / CI / other agents). If unsure, ask in the plan.
+
+## Step 2 — Present the plan and get approval
+
+Show the user a table of every change you intend to make — each file, the exact modification, and whether it's **create / merge / skip** — plus the settings.json backup line (3.1). **Do not write anything until the user approves.** Re-running later is an idempotent upgrade, so it's safe to approve again.
+
+## Step 3 — Apply
+
+### 3.1 Back up settings.json (if it exists)
+
+```bash
+[ -f .claude/settings.json ] && cp .claude/settings.json ".claude/settings.json.bak-$(date +%Y%m%d-%H%M%S)"
+```
+
+### 3.2 Install the review skill
 
 ```bash
 mkdir -p .claude/skills/codex-review
@@ -42,21 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/
   -o .claude/skills/codex-review/SKILL.md
 ```
 
-**Verify:** `test -s .claude/skills/codex-review/SKILL.md && echo OK`
-
----
-
-## 2 · Install a commit gate (optional, recommended)
-
-Pick by how the user commits — ask if unsure; you may install both:
-
-| The user commits… | Do |
-|:--|:--|
-| through **Claude Code** | **2a** — the `PreToolUse` hook |
-| from **terminal / other agent / IDE / CI** | **2b** — the git hook |
-| both | **2a and 2b** (git hook becomes a universal backstop) |
-
-### 2a · Claude Code `PreToolUse` hook
+### 3.3a Claude Code hook (recommended)
 
 Fetch the script:
 
@@ -67,10 +67,15 @@ curl -fsSL https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/
 chmod +x .claude/hooks/codex-commit-gate.sh
 ```
 
-Register it in `.claude/settings.json` (shared with the team — use `.claude/settings.local.json` instead for just yourself). **Merge; never clobber an existing file.** This `jq` recipe creates the file if absent, appends if present, and won't double-add on re-run:
+**Merge** this entry into `.claude/settings.json` under `.hooks.PreToolUse` — keep `$CLAUDE_PROJECT_DIR` **literal**, and keep every existing key intact:
+
+```json
+{ "matcher": "Bash", "hooks": [ { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/codex-commit-gate.sh", "timeout": 900 } ] }
+```
+
+Reference `jq` recipe (idempotent — creates the file if absent, appends if present, won't double-add on re-run):
 
 ```bash
-mkdir -p .claude
 f=.claude/settings.json
 [ -f "$f" ] || echo '{}' > "$f"
 tmp=$(mktemp)
@@ -81,58 +86,25 @@ jq --arg cmd '$CLAUDE_PROJECT_DIR/.claude/hooks/codex-commit-gate.sh' '
   end' "$f" > "$tmp" && mv "$tmp" "$f"
 ```
 
-> Keep `$CLAUDE_PROJECT_DIR` **literal** in the file (single-quote it in the shell as above) — Claude Code expands it at runtime.
+`timeout` is **seconds** and must exceed a slow review — keep it above `CODEX_GATE_TIMEOUT` (default 840).
 
-The entry it produces, for reference / manual editing:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/codex-commit-gate.sh", "timeout": 900 }
-        ]
-      }
-    ]
-  }
-}
-```
-
-**Verify:** `jq -e '.hooks.PreToolUse[].hooks[] | select(.command|endswith("codex-commit-gate.sh"))' .claude/settings.json >/dev/null && echo OK`
-
-Notes:
-- `timeout` is **seconds** and must exceed a slow review — keep it above `CODEX_GATE_TIMEOUT` (default 840).
-- Claude Code loads project hooks only after the user approves them. Tell the user to accept the hook (or restart the session) for it to take effect.
-
-### 2b · git `pre-commit` hook
+### 3.3b git hook (for commits made outside Claude Code)
 
 ```bash
 mkdir -p .githooks
 curl -fsSL https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/hooks/pre-commit \
   -o .githooks/pre-commit
 chmod +x .githooks/pre-commit
-git config core.hooksPath .githooks     # once per clone
+git config core.hooksPath .githooks
 ```
 
-**Verify:** `test "$(git config core.hooksPath)" = .githooks && echo OK`
+## Step 4 — Verify and hand off
 
-> Switching an existing repo *from* the git hook *to* the Claude hook? Undo the git hook with `git config --unset core.hooksPath` (local, reversible — the tracked `.githooks/pre-commit` can stay, it's inert without this), then do **2a**.
-
----
-
-## 3 · Report back to the user
-
-State exactly what you installed, and pass on:
-
-- **Bypass** (human / emergency): `git commit --no-verify`, or `CODEX_GATE_BYPASS=1 git commit …` — honored by both gates.
-- **Fail-closed**: if `codex` is missing or errors, commits are blocked, never waved through.
-- **Bootstrap**: if you installed **2b** and now commit these install files, that commit is itself reviewed — use `git commit --no-verify` for that first commit if you don't want to gate it.
-
-**Do not** run a codex review just to "test" the install — a smoke test spends a real codex call. Only run one if the user asks.
-
----
+1. `.claude/skills/codex-review/SKILL.md` exists and `codex` is on `PATH`.
+2. **(2a)** `jq -e '.hooks.PreToolUse[].hooks[] | select(.command|endswith("codex-commit-gate.sh"))' .claude/settings.json` succeeds, and the script is executable.
+3. **(2b)** `git config core.hooksPath` prints `.githooks`.
+4. Tell the user to **restart the Claude Code session (or approve the new project hook)** — project hooks are loaded at session start / after approval, so the gate isn't live until then.
+5. Summarize what changed, where the settings.json backup is, and how to bypass: `git commit --no-verify`, or `CODEX_GATE_BYPASS=1 git commit …`. **Do not** run a codex review just to test the install — a smoke test spends a real codex call. Only do so if the user asks.
 
 ## Uninstall
 
@@ -140,14 +112,14 @@ State exactly what you installed, and pass on:
 # review skill
 rm -rf .claude/skills/codex-review
 
-# 2a — remove our PreToolUse entry, then the script (keeps any other hooks intact)
+# Claude hook — drop our PreToolUse entry (keeps any other hooks), then the script
 tmp=$(mktemp)
 jq --arg cmd '$CLAUDE_PROJECT_DIR/.claude/hooks/codex-commit-gate.sh' \
   'if .hooks.PreToolUse then .hooks.PreToolUse |= map(select(any(.hooks[]?; .command==$cmd) | not)) else . end' \
   .claude/settings.json > "$tmp" && mv "$tmp" .claude/settings.json
 rm -f .claude/hooks/codex-commit-gate.sh
 
-# 2b
+# git hook
 git config --unset core.hooksPath
 rm -f .githooks/pre-commit
 ```

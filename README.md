@@ -15,13 +15,17 @@ A standalone **Codex code-review skill** for [Claude Code](https://docs.claude.c
 
 `codex exec review` (built into the Codex CLI) already performs a full, repo-aware code review. This project packages that as (a) a Claude Code skill the agent can invoke on its own initiative, and (b) optional enforcement gates — a Claude Code hook and/or a git hook — with **zero extra runtime**: no plugin, no wrapper script, no path resolver.
 
-> **Installing with an AI coding agent?** Give it this URL and let it run the steps itself — deterministic, idempotent, fetches every file by `curl` (no clone needed):
->
-> ```
-> https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/AGENT-INSTALL.md
-> ```
->
-> e.g. *"Read that URL and follow it to install the Codex review gate in this repo."* ([human-readable copy](AGENT-INSTALL.md)). The rest of this README is the human walkthrough.
+## Installing with an AI coding agent
+ Paste this prompt into Claude Code (or any agent that can fetch a URL) — it reads the runbook, shows you a plan, and writes nothing until you approve:
+
+```text
+Read https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/AGENT-INSTALL.md
+and follow it to install the Codex review gate into this repository.
+```
+
+Idempotent — re-running the prompt upgrades in place. Prefer to do it by hand? The same steps are written for humans in [`AGENT-INSTALL.md`](AGENT-INSTALL.md).
+
+> **Trust & security.** The prompt has your agent fetch scripts from this repo and merge them into your `.claude/` — treat it like any `curl | sh`: trust flows from the repo, not the paste. The approval gate lets you review the plan before anything is written; for a stronger guarantee, skim the bytes that get installed ([`hooks/codex-commit-gate.sh`](hooks/codex-commit-gate.sh), [`hooks/pre-commit`](hooks/pre-commit), [the skill](skills/codex-review/SKILL.md)) and **pin `main` to a commit SHA or tag** in the prompt — or clone the repo and point the prompt at your local copy.
 
 ## Prerequisites
 
