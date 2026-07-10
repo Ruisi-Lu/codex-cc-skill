@@ -95,9 +95,22 @@ run_case "--allow-empty (clean tree)"          0 "$C" "git commit --allow-empty 
 # 6. empty-index / dirty-tree
 run_case "bare commit, clean tree"             0 "$C" "git commit -m 'x'"
 run_case "bare commit, dirty tree"             2 "$D" "git commit -m 'x'"
-# 7. bypasses still work
-run_case "bypass env inline"                   0 "$D" "CODEX_GATE_BYPASS=1 git add x && git commit -m 'x'"
-run_case "bypass --no-verify"                  0 "$D" "git add x && git commit -m 'x' --no-verify"
+# 7. bypass is HUMAN-ONLY: model-issued forms must NOT bypass
+run_case "inline CODEX_GATE_BYPASS blocked"    2 "$S" "CODEX_GATE_BYPASS=1 git commit -m 'x'"
+run_case "inline bypass + staging blocked"     2 "$D" "CODEX_GATE_BYPASS=1 git add x && git commit -m 'x'"
+run_case "--no-verify blocked (staged)"        2 "$S" "git commit --no-verify -m 'x'"
+run_case "--no-verify + staging blocked"       2 "$D" "git add x && git commit -m 'x' --no-verify"
+run_case "-n (no-verify alias) blocked"        2 "$S" "git commit -n -m 'x'"
+run_case "-nm cluster blocked"                 2 "$S" "git commit -nm 'x'"
+# human env override still works (set in the hook's environment, not the command)
+env_case() { # name want_exit cwd cmd
+  before=$(wc -l < "$FAKE_LOG")
+  payload=$(python3 -c 'import json,sys;print(json.dumps({"tool_input":{"command":sys.argv[1]},"cwd":sys.argv[2]}))' "$4" "$3")
+  err=$(printf '%s' "$payload" | CODEX_GATE_BYPASS=1 "$HOOK" 2>&1 >/dev/null); got=$?
+  status=PASS; [ "$got" -eq "$2" ] || { status="FAIL(exit $got want $2)"; GLOBAL_FAIL=1; }
+  printf '%-52s %s\n' "$1" "$status"
+}
+env_case "human env CODEX_GATE_BYPASS=1 allows" 0 "$D" "git add x && git commit -m 'x'"
 # 8. multi-line -m message text (v1 live false positive regression)
 ML_CMD='git commit -m "fix(hooks): reject commit shapes
 

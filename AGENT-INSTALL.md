@@ -104,7 +104,7 @@ git config core.hooksPath .githooks
 2. **(2a)** `jq -e '.hooks.PreToolUse[].hooks[] | select(.command|endswith("codex-commit-gate.sh"))' .claude/settings.json` succeeds, and the script is executable.
 3. **(2b)** `git config core.hooksPath` prints `.githooks`.
 4. Tell the user to **restart the Claude Code session (or approve the new project hook)** — project hooks are loaded at session start / after approval, so the gate isn't live until then.
-5. Summarize what changed, where the settings.json backup is, and how to bypass: `git commit --no-verify`, or `CODEX_GATE_BYPASS=1 git commit …`. **Do not** run a codex review just to test the install — a smoke test spends a real codex call. Only do so if the user asks.
+5. Summarize what changed, where the settings.json backup is, and how a **human** bypasses: the git hook honors `git commit --no-verify` / `CODEX_GATE_BYPASS=1 git commit …` from a terminal; the Claude hook is human-only by construction and honors only `CODEX_GATE_BYPASS=1` in Claude Code's launch environment (a model-issued `--no-verify` / inline bypass is rejected). **Do not** run a codex review just to test the install — a smoke test spends a real codex call. Only do so if the user asks.
 
 ## Uninstall
 

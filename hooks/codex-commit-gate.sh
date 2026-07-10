@@ -37,8 +37,16 @@
 # recognize can dodge the gate entirely; pair with hooks/pre-commit
 # (git-level, commit-time index) for an airtight gate.
 #
-# Bypass (human/emergency): `git commit --no-verify`, prefix the command with
-# CODEX_GATE_BYPASS=1, or run Claude with CODEX_GATE_BYPASS=1 in its environment.
+# Bypass is HUMAN-ONLY by construction. This hook fires only for commits Claude
+# Code itself runs, so it does NOT honor a model-issued `--no-verify` or an
+# inline `CODEX_GATE_BYPASS=1 git commit …`; the model cannot wave itself past
+# its own gate. The one accepted override is CODEX_GATE_BYPASS=1 in the
+# environment Claude Code is launched with (a human decision made before the
+# session). Humans committing outside Claude Code never reach this hook — use
+# `git commit --no-verify` or the git-level hooks/pre-commit there. Note: any
+# local hook is honor-limited — a shell the model controls could still edit the
+# hook or use a wrapper the trigger misses; true enforcement is server-side
+# (branch protection / required checks / a pre-receive hook).
 
 payload=$(cat)
 
@@ -66,13 +74,17 @@ else
 fi
 [ -n "$cmd" ] || cmd=$payload
 
-# Bypass: environment variable, inline `CODEX_GATE_BYPASS=1 …`, or `--no-verify`.
-# Checked first so an emergency human commit is never parsed or reviewed.
+# The ONLY override this hook honors is a HUMAN one: CODEX_GATE_BYPASS=1 set in
+# the environment Claude Code was launched with. This hook fires solely for
+# commits the model runs, so it must never let the model wave ITSELF through the
+# review it exists to enforce. An inline `CODEX_GATE_BYPASS=1 git commit …` does
+# NOT bypass — the assignment prefix is not a plain commit, so the shape check
+# below rejects it — and `--no-verify` is rejected explicitly in the flag loop.
+# Setting the env var is a human decision made before the session; the model
+# cannot alter this hook's own environment from a later Bash call. Humans
+# committing outside Claude Code never reach this hook — they use `git commit
+# --no-verify` or the git-level hooks/pre-commit there.
 [ "$CODEX_GATE_BYPASS" = "1" ] && exit 0
-case "$cmd" in
-  *CODEX_GATE_BYPASS=1*) exit 0 ;;
-  *--no-verify*)         exit 0 ;;
-esac
 
 # Deny-by-default shape validation, on the command flattened to one line so
 # multi-line -m bodies and newline-separated commands are analysed uniformly.
@@ -152,7 +164,12 @@ for tok in $middle; do
     --amend|--no-edit|--edit|-e|--signoff|-s|--no-signoff|--quiet|-q|--verbose|-v|\
     --allow-empty|--allow-empty-message|--no-gpg-sign|-S*|--gpg-sign|--gpg-sign=*|\
     --author=*|--date=*|--cleanup=*|--trailer=*|--reuse-message=*|--reedit-message=*|\
-    --fixup=*|--squash=*|--dry-run|-n) ;;
+    --fixup=*|--squash=*|--dry-run) ;;
+    --no-verify|-n)
+      set +f
+      echo "[codex-review-gate] '--no-verify' (a.k.a. '-n') is a human-only override and is not honored for commits run through Claude Code — the model cannot bypass its own review gate. A human may bypass by launching Claude Code with CODEX_GATE_BYPASS=1 in the environment, or by committing from a real terminal." >&2
+      exit 2
+      ;;
     *)
       set +f
       echo "[codex-review-gate] commit flag or argument '$tok' is not on the gate's plain-commit allowlist (staging flags, pathspecs and unknown options are rejected). Stage content with 'git add …' in a separate Bash call; value-taking options need their = form (e.g. --reuse-message=HEAD)." >&2

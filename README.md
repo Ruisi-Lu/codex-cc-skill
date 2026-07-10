@@ -94,8 +94,11 @@ git config core.hooksPath .githooks   # once per clone
 
 ### Bypass & defense-in-depth
 
-- **Bypass** (human, emergencies): `git commit --no-verify`, or `CODEX_GATE_BYPASS=1 git commit …` — honored by **both** gates.
+- **Bypass** (human, emergencies):
+  - The **git hook** (`hooks/pre-commit`, terminal/CI) honors `git commit --no-verify` or `CODEX_GATE_BYPASS=1 git commit …` — a human at a real terminal.
+  - The **Claude hook** (`hooks/codex-commit-gate.sh`) is **human-only by construction**: it fires only for commits the model runs, so it does **not** honor a model-issued `--no-verify` or inline `CODEX_GATE_BYPASS=1 git commit …` (the model must not wave itself past its own gate). The one accepted override is `CODEX_GATE_BYPASS=1` in the environment Claude Code is launched with.
 - The two are **complementary, not either/or.** The Claude hook only fires when Claude Code is driving; install **both** and the git hook becomes a universal backstop that also covers terminal / other-agent / CI commits.
+- **Any local hook is honor-limited** — a shell the model controls could edit the hook or use a wrapper the trigger misses. For a hard guarantee, enforce server-side (branch protection / required checks / a pre-receive hook).
 
 ## Credits / Derived from
 
