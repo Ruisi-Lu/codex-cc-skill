@@ -20,6 +20,15 @@
 # missing / codex error -> exit 2 with the reason on stderr, which Claude Code
 # feeds back to the model as the block reason (fail-closed — never waved through).
 #
+# Because the hook runs BEFORE the command, the only index it can trust is a
+# pre-staged one. Shapes that (re)stage in the same call are rejected outright:
+# same-call staging (`git add … && git commit`), commit-time staging flags
+# (`-a`/`--all`/`--include`/`--interactive`/`--patch`), and a bare commit from a
+# dirty tree with an empty index. The required form is two steps: stage in one
+# Bash call, plain `git commit -m …` in the next. Known residual: pathspec or
+# late `-a` commits layered over an already-staged index can still under-review;
+# pair with hooks/pre-commit (git-level, commit-time index) for an airtight gate.
+#
 # Bypass (human/emergency): `git commit --no-verify`, prefix the command with
 # CODEX_GATE_BYPASS=1, or run Claude with CODEX_GATE_BYPASS=1 in its environment.
 
@@ -62,18 +71,45 @@ case "$cmd" in
   *--no-verify*)         exit 0 ;;
 esac
 
+# The hook fires before the command executes, so it can only review an index
+# that already exists. A command that reshapes the index in the same call as the
+# commit would commit content this review never saw — fail closed and ask for
+# the two-step form instead.
+staging_re='(^|[;&|(])[[:space:]]*(sudo[[:space:]]+)?git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+(add|rm|mv|reset|restore|stash|apply|update-index|read-tree|checkout|cherry-pick|merge|revert|pull)([[:space:]]|$)'
+if printf '%s' "$cmd" | grep -Eq "$staging_re"; then
+  echo "[codex-review-gate] this command changes the git index in the same call as 'git commit', so the review cannot see what would actually be committed (the hook runs before the command executes). Run the staging step ('git add …') as its own Bash call, then a plain 'git commit -m \"…\"' as the next call." >&2
+  exit 2
+fi
+
+# `git commit -a/--all/--include/--interactive/--patch` stage at commit time —
+# equally invisible to a pre-command review. Scan only up to the first `-m` /
+# `--message` so commit-message text cannot false-positive the long flags; the
+# short `-a` cluster is only matched directly after `commit` (never `--amend`).
+cmd_head=$(printf '%s' "$cmd" | sed 's/[[:space:]]-m[[:space:]].*//; s/[[:space:]]--message.*//')
+if printf '%s' "$cmd_head" | grep -Eq -- 'commit[[:space:]]+-[A-Za-z]*a([A-Za-z]*)?([[:space:]]|$)|--all([[:space:]]|$)|--include([[:space:]]|$)|--interactive([[:space:]]|$)|--patch([[:space:]]|$)'; then
+  echo "[codex-review-gate] 'git commit -a/--all/--include/--interactive/--patch' stages changes at commit time, which this pre-command review cannot see. Stage explicitly with 'git add …' in one Bash call, then run a plain 'git commit -m \"…\"' in the next." >&2
+  exit 2
+fi
+
 # Run git in the repo Claude is working in. If cwd is missing/unusable, fall back
 # to the hook's own cwd — Claude Code sets it to the project root, still the repo.
 # shellcheck disable=SC2164
 [ -n "$cwd" ] && [ -d "$cwd" ] && cd "$cwd" 2>/dev/null
 
-# Nothing staged → nothing to review (Claude may `git add` in a later step).
-git diff --cached --quiet 2>/dev/null && exit 0
-
 # Skip commits that aren't a plain edit-and-commit.
 gitdir=$(git rev-parse --git-dir 2>/dev/null) || exit 0
 if [ -e "$gitdir/MERGE_HEAD" ] || [ -e "$gitdir/CHERRY_PICK_HEAD" ] || [ -e "$gitdir/REVERT_HEAD" ]; then
   exit 0
+fi
+
+if git diff --cached --quiet 2>/dev/null; then
+  # Nothing staged at hook time. Clean tree → the commit is a no-op (or
+  # --allow-empty, an empty diff), so let git handle it. Dirty tree → the commit
+  # could only pick up content through same-call staging, '-a', or pathspec
+  # arguments, none of which this pre-command review can see. Fail closed.
+  [ -z "$(git status --porcelain 2>/dev/null)" ] && exit 0
+  echo "[codex-review-gate] nothing is staged but the working tree has changes — a commit from here could only include content via same-call staging, '-a', or pathspec arguments, which this review cannot see (the hook runs before the command). Stage with 'git add …' in one Bash call, then run a plain 'git commit -m \"…\"' in the next." >&2
+  exit 2
 fi
 
 if ! command -v codex >/dev/null 2>&1; then
