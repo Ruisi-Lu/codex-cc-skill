@@ -61,12 +61,7 @@ Default-scope guidance when the user is vague ("review my changes"): use `--unco
 
 ## Optional: enforce a review at every commit
 
-A repo can hard-require a passing review before each commit, using either of the gates shipped alongside this skill. Both return the same `ALLOW:` / `BLOCK:` verdict and abort the commit unless Codex returns `ALLOW:`:
-
-- **`hooks/codex-commit-gate.sh`** — a Claude Code `PreToolUse` hook that blocks *you* (Claude) from running `git commit` until the staged diff passes; the block reason is fed back to you in-loop, so you can resolve it and re-commit in the same conversation.
-- **`hooks/pre-commit`** — a git hook that fires for commits made outside Claude Code (terminal, other agents, CI).
-
-See the repo README to install them. When either gate is active, **run this skill proactively before committing** so you resolve findings first and the commit passes on the first try instead of getting bounced.
+A repo can hard-require a passing review before each commit using the **git `pre-commit` hook** shipped alongside this skill (`hooks/pre-commit`): it reviews the real staged index (`git diff --cached`) at commit time and aborts the commit unless Codex returns `ALLOW:`. Because it hooks git itself, it fires for every `git commit` — from Claude Code, the terminal, other agents, or CI — and can't be dodged by how the commit is spelled. See the repo README to install it. When the gate is active, **run this skill proactively before committing** so you resolve findings first and the commit passes on the first try instead of getting bounced. (A local hook is honor-limited — `--no-verify` skips it; for a hard guarantee, enforce server-side with branch protection / a required check.)
 
 ## Credits
 

@@ -1,22 +1,24 @@
 # codex-cc-skill
 
-A standalone **Codex code-review skill** for [Claude Code](https://docs.claude.com/en/docs/claude-code) (and any agent that can run shell commands), plus optional **commit-review gates** — a Claude Code hook, a git pre-commit hook, or both. Everything drives the [`codex`](https://github.com/openai/codex) CLI directly — **no Claude Code plugin, no companion runtime, just the `codex` binary**.
+A standalone **Codex code-review skill** for [Claude Code](https://docs.claude.com/en/docs/claude-code) (and any agent that can run shell commands), plus an optional **git pre-commit review gate**. Everything drives the [`codex`](https://github.com/openai/codex) CLI directly — **no Claude Code plugin, no companion runtime, just the `codex` binary**.
 
 ## What's in here
 
 | Path | What it is |
 |:---|:---|
 | `skills/codex-review/SKILL.md` | A model-invocable skill: run an independent Codex review of your git changes with `codex exec review`, present the findings, never auto-fix. |
-| `hooks/codex-commit-gate.sh` | A Claude Code `PreToolUse` hook that blocks Claude from running `git commit` until Codex approves the staged diff (`ALLOW:` / `BLOCK:`) — the in-loop counterpart to the git hook. |
-| `hooks/pre-commit` | A tiny git hook that hard-blocks a commit until Codex approves the staged diff, for commits made outside Claude Code. |
-| `AGENT-INSTALL.md` | Deterministic, copy-paste install steps written for an AI agent to execute (skill + either commit gate), including a safe `jq` merge into an existing `settings.json`. |
+| `hooks/pre-commit` | A tiny **git** hook that hard-blocks a commit until Codex approves the staged diff (`ALLOW:` / `BLOCK:`). Fires for every `git commit` — from Claude Code, the terminal, another agent, an IDE, or CI. |
+| `AGENT-INSTALL.md` | Deterministic, copy-paste install steps written for an AI agent to execute (skill + the git gate). |
 
-## Why
+## Why a git hook (and not a pre-command agent hook)
 
-`codex exec review` (built into the Codex CLI) already performs a full, repo-aware code review. This project packages that as (a) a Claude Code skill the agent can invoke on its own initiative, and (b) optional enforcement gates — a Claude Code hook and/or a git hook — with **zero extra runtime**: no plugin, no wrapper script, no path resolver.
+`codex exec review` (built into the Codex CLI) already performs a full, repo-aware code review. This project packages that as (a) a Claude Code skill the agent can invoke on its own initiative, and (b) an optional enforcement gate — with **zero extra runtime**: no plugin, no wrapper script, no path resolver.
+
+The gate is a **git `pre-commit` hook** rather than an agent-side "before the tool runs" hook on purpose. A pre-command hook only sees the *shell command string* and has to guess — with regex — whether it will run `git commit` and exactly what it will commit; that is a losing battle against ordinary shell (newlines, wrappers like `timeout`/`sudo`, here-docs, command substitution, quoting). The git hook runs at **commit time against the real staged index** (`git diff --cached`), so it reviews exactly what is about to be committed, no command-parsing required, and it cannot be dodged by how the commit is spelled. It fires no matter who runs `git commit`.
 
 ## Installing with an AI coding agent
- Paste this prompt into Claude Code (or any agent that can fetch a URL) — it reads the runbook, shows you a plan, and writes nothing until you approve:
+
+Paste this prompt into Claude Code (or any agent that can fetch a URL) — it reads the runbook, shows you a plan, and writes nothing until you approve:
 
 ```text
 Read https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/AGENT-INSTALL.md
@@ -25,7 +27,7 @@ and follow it to install the Codex review gate into this repository.
 
 Idempotent — re-running the prompt upgrades in place. Prefer to do it by hand? The same steps are written for humans in [`AGENT-INSTALL.md`](AGENT-INSTALL.md).
 
-> **Trust & security.** The prompt has your agent fetch scripts from this repo and merge them into your `.claude/` — treat it like any `curl | sh`: trust flows from the repo, not the paste. The approval gate lets you review the plan before anything is written; for a stronger guarantee, skim the bytes that get installed ([`hooks/codex-commit-gate.sh`](hooks/codex-commit-gate.sh), [`hooks/pre-commit`](hooks/pre-commit), [the skill](skills/codex-review/SKILL.md)) and **pin `main` to a commit SHA or tag** in the prompt — or clone the repo and point the prompt at your local copy.
+> **Trust & security.** The prompt has your agent fetch scripts from this repo and merge them into your repo — treat it like any `curl | sh`: trust flows from the repo, not the paste. The approval gate lets you review the plan before anything is written; for a stronger guarantee, skim the bytes that get installed ([`hooks/pre-commit`](hooks/pre-commit), [the skill](skills/codex-review/SKILL.md)) and **pin `main` to a commit SHA or tag** in the prompt — or clone the repo and point the prompt at your local copy.
 
 ## Prerequisites
 
@@ -46,44 +48,7 @@ This vendors `skills/codex-review/SKILL.md` into `.claude/skills/codex-review/` 
 
 ## Enforce a review at every commit (optional)
 
-Two ways to hard-block an unreviewed commit — **pick by how you commit.** Both run the same `ALLOW:` / `BLOCK:` review, are **fail-closed** (a missing or erroring `codex` blocks the commit — never waved through), and **skip** empty / message-only and merge/cherry-pick/revert commits.
-
-### Using Claude Code → the `PreToolUse` hook
-
-This is the path for work driven **through Claude Code.** It gates the commit *inside Claude's tool loop*, so when Codex blocks, the findings come straight back to the model and it can fix them and re-commit without leaving the conversation.
-
-```bash
-mkdir -p .claude/hooks
-cp hooks/codex-commit-gate.sh .claude/hooks/
-chmod +x .claude/hooks/codex-commit-gate.sh
-```
-
-Then register it in `.claude/settings.json` (create the file if it doesn't exist):
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/codex-commit-gate.sh",
-            "timeout": 900
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Now whenever Claude runs `git commit`, the staged diff is reviewed first and the commit is blocked — with the findings handed to Claude — unless Codex returns `ALLOW:`. Keep `timeout` (seconds) above a slow review; it must exceed `CODEX_GATE_TIMEOUT` (default 840s).
-
-### Not using Claude Code → the git pre-commit hook
-
-This is the path for commits made **outside Claude Code** — from the terminal, another agent, an IDE, or CI. It hooks git itself, so it fires no matter who runs `git commit`.
+Install the git hook. It runs the `ALLOW:` / `BLOCK:` review, is **fail-closed** (a missing or erroring `codex` blocks the commit — never waved through), and **skips** empty / message-only and merge/cherry-pick/revert commits.
 
 ```bash
 mkdir -p .githooks
@@ -92,13 +57,12 @@ chmod +x .githooks/pre-commit
 git config core.hooksPath .githooks   # once per clone
 ```
 
+Now every `git commit` — including the ones Claude Code runs — reviews the staged diff first and is blocked, with the findings on stderr, unless Codex returns `ALLOW:`. Claude Code sees the block in the command output and can fix and re-commit in the same conversation. Keep a slow review under `CODEX_GATE_TIMEOUT` (default 840s).
+
 ### Bypass & defense-in-depth
 
-- **Bypass** (human, emergencies):
-  - The **git hook** (`hooks/pre-commit`, terminal/CI) honors `git commit --no-verify` or `CODEX_GATE_BYPASS=1 git commit …` — a human at a real terminal.
-  - The **Claude hook** (`hooks/codex-commit-gate.sh`) is **human-only by construction**: it fires only for commits the model runs, so it does **not** honor a model-issued `--no-verify` or inline `CODEX_GATE_BYPASS=1 git commit …` (the model must not wave itself past its own gate). The one accepted override is `CODEX_GATE_BYPASS=1` in the environment Claude Code is launched with.
-- The two are **complementary, not either/or.** The Claude hook only fires when Claude Code is driving; install **both** and the git hook becomes a universal backstop that also covers terminal / other-agent / CI commits.
-- **Any local hook is honor-limited** — a shell the model controls could edit the hook or use a wrapper the trigger misses. For a hard guarantee, enforce server-side (branch protection / required checks / a pre-receive hook).
+- **Bypass** (human, emergencies): `git commit --no-verify` (git's built-in hook skip) or `CODEX_GATE_BYPASS=1 git commit …`. These are visible in the command — use them deliberately, not to skip fixes.
+- **A local hook is honor-limited.** It reviews *content* robustly, but anyone (including an agent) with shell access can `--no-verify`, edit the hook, or unset `core.hooksPath`. For a hard, un-bypassable guarantee, enforce **server-side**: branch protection with a required status check, or a `pre-receive` hook — something the committer cannot reach. Treat this hook as an early, in-loop reviewer, and the server as the gate of record.
 
 ## Credits / Derived from
 
