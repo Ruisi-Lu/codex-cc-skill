@@ -1,0 +1,15 @@
+{
+  "name": "codex-cc-skill",
+  "description": "Codex code review for Claude Code, driven by the plain codex CLI.",
+  "owner": {
+    "name": "Ruisi Lu",
+    "url": "https://github.com/Ruisi-Lu"
+  },
+  "plugins": [
+    {
+      "name": "codex-review",
+      "source": "./",
+      "description": "On-demand Codex review skill plus a fail-closed git pre-commit gate, with a session-start check that offers to install the gate where it is missing."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "codex-review",
+  "version": "1.0.0",
+  "description": "Independent Codex code review for Claude Code: an on-demand review skill, plus a fail-closed git pre-commit gate that /codex-review:init installs into repositories that don't have it yet.",
+  "author": {
+    "name": "Ruisi Lu",
+    "url": "https://github.com/Ruisi-Lu"
+  },
+  "homepage": "https://github.com/Ruisi-Lu/codex-cc-skill",
+  "repository": "https://github.com/Ruisi-Lu/codex-cc-skill",
+  "license": "Apache-2.0",
+  "keywords": ["codex", "code-review", "pre-commit", "git-hooks"]
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Offer to install the Codex pre-commit gate when the current repository does not have it active",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

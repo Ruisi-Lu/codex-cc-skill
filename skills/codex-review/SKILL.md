@@ -1,13 +1,13 @@
 ---
 name: codex-review
-description: Run an independent Codex code review of local git changes via the `codex` CLI (`codex exec review`). Use when the user asks to review/check the diff or changes with Codex, wants a second opinion, or says "codex review"; and proactively after finishing a nontrivial code change, before committing, as a correctness gate. Standalone — needs only the `codex` CLI, no Claude Code plugin. Review-only, it surfaces findings and never auto-fixes.
+description: Run an independent Codex code review of local git changes via the `codex` CLI (`codex exec review`). Use when the user asks to review/check the diff or changes with Codex, wants a second opinion, or says "codex review"; and proactively after finishing a nontrivial code change, before committing, as a correctness gate. Needs only the `codex` CLI, no companion runtime. Review-only, it surfaces findings and never auto-fixes.
 ---
 
 # Codex Review
 
 Get Codex to review your git changes and return its findings. Codex is a **second, independent reviewer** — a different model with fresh eyes — so it catches correctness and security bugs your own pass can miss.
 
-This skill is **standalone**: it drives the `codex` CLI directly (`codex exec review`), so it works for anyone who has Codex installed — **no Claude Code plugin, no companion script, no wrapper.** The CLI already does a full, repo-aware review; this skill is just the instructions for when and how to invoke it and how to handle the result.
+This skill drives the `codex` CLI directly (`codex exec review`), so it works for anyone who has Codex installed — **no companion script, no wrapper** — whether it came from the `codex-review` Claude Code plugin or was vendored into `.claude/skills/`. The CLI already does a full, repo-aware review; this skill is just the instructions for when and how to invoke it and how to handle the result.
 
 ## Prerequisite
 
@@ -16,6 +16,7 @@ The `codex` CLI must be installed and authenticated:
 ```bash
 npm install -g @openai/codex   # if `codex` is not already on PATH
 codex login                    # one-time auth (ChatGPT sign-in or API key)
+                               # not needed with a custom model_provider in ~/.codex/config.toml
 ```
 
 If `codex` is missing or unauthenticated, tell the user to run the above and stop — do not improvise a different review path.
@@ -61,8 +62,8 @@ Default-scope guidance when the user is vague ("review my changes"): use `--unco
 
 ## Optional: enforce a review at every commit
 
-A repo can hard-require a passing review before each commit using the **git `pre-commit` hook** shipped alongside this skill (`hooks/pre-commit`): it reviews the real staged index (`git diff --cached`) at commit time and aborts the commit unless Codex returns `ALLOW:`. Because it hooks git itself, it fires for every `git commit` — from Claude Code, the terminal, other agents, or CI — and can't be dodged by how the commit is spelled. See the repo README to install it. When the gate is active, **run this skill proactively before committing** so you resolve findings first and the commit passes on the first try instead of getting bounced. (A local hook is honor-limited — `--no-verify` skips it; for a hard guarantee, enforce server-side with branch protection / a required check.)
+A repo can hard-require a passing review before each commit using the **git `pre-commit` hook** shipped alongside this skill (`hooks/pre-commit`): it reviews the real staged index (`git diff --cached`) at commit time and aborts the commit unless Codex returns `ALLOW:`. Because it hooks git itself, it fires for every `git commit` — from Claude Code, the terminal, other agents, or CI — and can't be dodged by how the commit is spelled. With the `codex-review` plugin, `/codex-review:init` installs it (after showing the plan and getting the user's approval); otherwise see the repo README. When the gate is active, **run this skill proactively before committing** so you resolve findings first and the commit passes on the first try instead of getting bounced. (A local hook is honor-limited — `--no-verify` skips it; for a hard guarantee, enforce server-side with branch protection / a required check.)
 
 ## Credits
 
-The review-gate approach — the `ALLOW:` / `BLOCK:` verdict contract — is derived from OpenAI's Codex Claude Code plugin, <https://github.com/openai/codex-plugin-cc> (Apache-2.0). This skill reimplements it against the plain `codex` CLI so it needs no plugin.
+The review-gate approach — the `ALLOW:` / `BLOCK:` verdict contract — is derived from OpenAI's Codex Claude Code plugin, <https://github.com/openai/codex-plugin-cc> (Apache-2.0). This skill reimplements it against the plain `codex` CLI so it needs nothing beyond the `codex` binary.

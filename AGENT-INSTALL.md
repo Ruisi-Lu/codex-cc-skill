@@ -2,6 +2,8 @@
 
 > **Written for an AI coding agent** (Claude Code, Cursor, …) installing into the **current repository** on the user's behalf. If you are that agent: do the steps in order, **never skip the approval gate in Step 2**, and **merge, never overwrite**. A human can follow the same steps by hand.
 
+> **Claude Code users:** the `codex-review` plugin packages the same pieces — `/plugin marketplace add Ruisi-Lu/codex-cc-skill`, `/plugin install codex-review@codex-cc-skill`, then `/codex-review:init` in each repository (see the README). Plugins are installed by the user, not by this runbook; this runbook is the plugin-free path. If the plugin is already enabled, skip Step 3.1 — the plugin already provides the skill.
+
 ## What you are installing
 
 Everything is scoped to **this repo** — nothing global, nothing outside the repo. Two pieces:
@@ -23,7 +25,7 @@ Everything is scoped to **this repo** — nothing global, nothing outside the re
 command -v codex >/dev/null && codex --version || echo "MISSING: npm i -g @openai/codex && codex login"
 ```
 
-If it's missing or unauthenticated, tell the user to install and `codex login`, then **stop** — do not substitute another review tool.
+If it's missing, or not authenticated by any of `codex login`, an API key (`OPENAI_API_KEY` / `CODEX_API_KEY`), or a custom `model_provider` in `~/.codex/config.toml`, tell the user to install and authenticate it, then **stop** — do not substitute another review tool.
 
 ## Step 1 — Preflight (read-only, write nothing)
 
@@ -32,6 +34,8 @@ Gather the current state before proposing anything:
 1. Confirm the repo root: `git rev-parse --show-toplevel`.
 2. Note what's already installed: `.claude/skills/codex-review/SKILL.md`? `git config --get core.hooksPath`?
 3. If `core.hooksPath` is already set to something other than `.githooks`, **stop and ask** — don't silently repoint it.
+4. If `core.hooksPath` is unset, list the current hooks directory (`git rev-parse --git-path hooks`). Any hook there that isn't a `*.sample` **stops running** once `core.hooksPath` points at `.githooks` — **stop and ask** (the user may want them moved into `.githooks/` first).
+5. If `.githooks/pre-commit` already exists and isn't this gate (its second line starts with `# codex-review gate`), **stop and ask** — never overwrite someone else's hook.
 
 ## Step 2 — Present the plan and get approval
 
