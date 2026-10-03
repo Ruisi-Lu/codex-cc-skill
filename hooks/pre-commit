@@ -2,6 +2,7 @@
 # codex-review gate — block a commit unless Codex approves the staged diff.
 #
 # Standalone: needs only the `codex` CLI (https://github.com/openai/codex) + git.
+#   Requires: codex-cli 0.119.0 or newer (for a working `codex exec --ephemeral`)
 #   Install:  npm install -g @openai/codex  &&  codex login
 #   Enable:   cp hooks/pre-commit .githooks/pre-commit && chmod +x .githooks/pre-commit
 #             git config core.hooksPath .githooks      # once per clone
@@ -15,6 +16,8 @@
 # required: `codex` invoked inside a codex-"trusted" project otherwise performs
 # a "curated-sync" that RESETS the repo's HEAD. Isolation also guarantees no
 # repository-derived value is passed through a shell (cf. codex-plugin-cc #447).
+# The run is --ephemeral, so staged diffs never pile up in codex's session
+# history. When codex produces no verdict, the tail of its output is shown.
 #
 # Derived from the stop-review-gate in openai/codex-plugin-cc (Apache-2.0).
 
@@ -49,8 +52,9 @@ git diff --cached >"$tmp/staged.diff"
   for v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
   $codex exec \
     "You are a mandatory pre-commit code review gate. Review ONLY the staged diff provided on stdin. Your FIRST line MUST be exactly 'ALLOW: <reason>' or 'BLOCK: <reason>'. BLOCK only for real problems introduced by this diff (correctness bugs, security/authorization holes, data loss, broken error handling, resource/lifecycle leaks, clear regressions); when you BLOCK, list each finding after the first line as 'file:line — problem — fix'. Do not block on style, nitpicks, or pre-existing issues unrelated to this diff." \
-    -C "$tmp" --skip-git-repo-check -s read-only --color never -o "$tmp/verdict" <"$tmp/staged.diff" >/dev/null 2>&1
+    -C "$tmp" --skip-git-repo-check --ephemeral -s read-only --color never -o "$tmp/verdict" <"$tmp/staged.diff" >/dev/null 2>"$tmp/codex.log"
 )
+rc=$?
 
 if head -n 1 "$tmp/verdict" 2>/dev/null | grep -q '^ALLOW:'; then
   exit 0
@@ -58,7 +62,16 @@ fi
 
 echo "[codex-review-gate] commit blocked — Codex review did not pass:" >&2
 echo >&2
-cat "$tmp/verdict" >&2 2>/dev/null || echo "(no review output — codex may have failed; check 'codex login')" >&2
+if [ -s "$tmp/verdict" ]; then
+  cat "$tmp/verdict" >&2
+else
+  if [ "$rc" = 124 ]; then
+    echo "(codex timed out after ${CODEX_GATE_TIMEOUT:-840}s; raise CODEX_GATE_TIMEOUT for a large diff. The end of its output follows.)" >&2
+  else
+    echo "(no review output — codex exited with status $rc; the end of its output follows. Check 'codex login' and that codex-cli is 0.119.0 or newer.)" >&2
+  fi
+  tail -n 20 "$tmp/codex.log" >&2 2>/dev/null
+fi
 echo >&2
 echo "Fix the issues and re-commit. Human override: git commit --no-verify  or  CODEX_GATE_BYPASS=1" >&2
 exit 1

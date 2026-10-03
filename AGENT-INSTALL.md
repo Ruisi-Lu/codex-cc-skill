@@ -25,7 +25,7 @@ Everything is scoped to **this repo** — nothing global, nothing outside the re
 command -v codex >/dev/null && codex --version || echo "MISSING: npm i -g @openai/codex && codex login"
 ```
 
-If it's missing, or not authenticated by any of `codex login`, an API key (`OPENAI_API_KEY` / `CODEX_API_KEY`), or a custom `model_provider` in `~/.codex/config.toml`, tell the user to install and authenticate it, then **stop** — do not substitute another review tool.
+The gate needs codex-cli **0.119.0 or newer**; if `codex --version` is older, tell the user to upgrade it first. If it's missing, or not authenticated by any of `codex login`, an API key (`OPENAI_API_KEY` / `CODEX_API_KEY`), or a custom `model_provider` in `~/.codex/config.toml`, tell the user to install and authenticate it, then **stop** — do not substitute another review tool.
 
 ## Step 1 — Preflight (read-only, write nothing)
 

@@ -26,7 +26,7 @@ curl -fsSL https://chatgpt.com/codex/install.sh | sh   # or: npm install -g @ope
 codex login   # skip if codex uses an API key or a custom model_provider in ~/.codex/config.toml
 ```
 
-Verified against codex-cli **0.160.0**. Note that `codex exec review` accepts either a scope flag (`--base`, `--uncommitted`, `--commit`) or a custom-instructions prompt, never both.
+Verified against codex-cli **0.160.0**; the commit gate needs **0.119.0 or newer**. Note that `codex exec review` accepts either a scope flag (`--base`, `--uncommitted`, `--commit`) or a custom-instructions prompt, never both.
 
 ## Install as a Claude Code plugin (recommended)
 
@@ -90,7 +90,7 @@ git config core.hooksPath .githooks   # once per clone
 
 Setting `core.hooksPath` makes git stop running hooks in `.git/hooks` — move any you rely on into `.githooks/` first.
 
-Now every `git commit` — including the ones Claude Code runs — reviews the staged diff first and is blocked, with the findings on stderr, unless Codex returns `ALLOW:`. Claude Code sees the block in the command output and can fix and re-commit in the same conversation. Keep a slow review under `CODEX_GATE_TIMEOUT` (default 840s).
+Now every `git commit` — including the ones Claude Code runs — reviews the staged diff first and is blocked, with the findings on stderr, unless Codex returns `ALLOW:`. Claude Code sees the block in the command output and can fix and re-commit in the same conversation. Keep a slow review under `CODEX_GATE_TIMEOUT` (default 840s). If codex fails without a verdict (not logged in, a CLI older than 0.119.0, a timeout), the block message says so and shows the end of codex's own output. Reviews run with `--ephemeral`, so staged diffs are not kept in codex's session history.
 
 ### Bypass & defense-in-depth
 
@@ -99,7 +99,7 @@ Now every `git commit` — including the ones Claude Code runs — reviews the s
 
 ## Development
 
-Tests exercise `scripts/gate.sh` against throwaway repositories with a stubbed `codex` (no real codex call). The toolchain is pinned in `.prototools`:
+Tests exercise `scripts/gate.sh` and `hooks/pre-commit` (through real `git commit`s) against throwaway repositories with a stubbed `codex` (no real codex call). The toolchain is pinned in `.prototools`:
 
 ```bash
 proto use
