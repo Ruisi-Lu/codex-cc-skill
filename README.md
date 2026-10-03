@@ -22,9 +22,11 @@ The gate is a **git `pre-commit` hook** rather than an agent-side "before the to
 ## Prerequisites
 
 ```bash
-npm install -g @openai/codex
+curl -fsSL https://chatgpt.com/codex/install.sh | sh   # or: npm install -g @openai/codex  /  brew install --cask codex
 codex login   # skip if codex uses an API key or a custom model_provider in ~/.codex/config.toml
 ```
+
+Verified against codex-cli **0.160.0**. Note that `codex exec review` accepts either a scope flag (`--base`, `--uncommitted`, `--commit`) or a custom-instructions prompt, never both.
 
 ## Install as a Claude Code plugin (recommended)
 

@@ -14,9 +14,13 @@ This skill drives the `codex` CLI directly (`codex exec review`), so it works fo
 The `codex` CLI must be installed and authenticated:
 
 ```bash
-npm install -g @openai/codex   # if `codex` is not already on PATH
-codex login                    # one-time auth (ChatGPT sign-in or API key)
-                               # not needed with a custom model_provider in ~/.codex/config.toml
+# If `codex` is not already on PATH, install it one of these ways:
+curl -fsSL https://chatgpt.com/codex/install.sh | sh   # official standalone installer (macOS/Linux)
+npm install -g @openai/codex
+brew install --cask codex
+
+codex login   # one-time auth (ChatGPT sign-in or API key)
+              # not needed with a custom model_provider in ~/.codex/config.toml
 ```
 
 If `codex` is missing or unauthenticated, tell the user to run the above and stop — do not improvise a different review path.
@@ -43,9 +47,11 @@ codex exec review --uncommitted
 # The changes introduced by a single commit:
 codex exec review --commit <sha>
 
-# Optional focus / custom instructions (append as a prompt):
-codex exec review --base main "Pay special attention to the auth and error-handling changes."
+# Custom instructions: a prompt REPLACES the scope flag, so name the diff in the prompt itself:
+codex exec review "Review the changes on this branch against main (git diff main...HEAD). Pay special attention to the auth and error-handling changes."
 ```
+
+The `[PROMPT]` argument cannot be combined with `--base`, `--uncommitted`, or `--commit` — the CLI rejects it (`error: the argument '--base <BRANCH>' cannot be used with '[PROMPT]'`). A prompt turns the run into a custom review whose scope is whatever the prompt says, so when the user wants a focus area, spell out the diff explicitly: `git diff <default-branch>...HEAD` for the branch, `git diff HEAD` plus untracked files for uncommitted work, or `git show <sha>` for one commit. For a long prompt, pass `-` and pipe it on stdin. Without a focus request, prefer the plain scope flags.
 
 Run the command with a long timeout (up to ~10 minutes for a large diff). `codex exec review` runs read-only — it reviews, it does not edit — and prints its findings to stdout.
 
