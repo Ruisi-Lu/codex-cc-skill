@@ -22,14 +22,29 @@ done
 case $FAKE_CODEX_MODE in
   allow) printf 'ALLOW: looks fine\\n' >"$out" ;;
   block) printf 'BLOCK: off-by-one\\nsrc.txt:1 — problem — fix\\n' >"$out" ;;
+  allow-then-fail) printf 'ALLOW: looks fine\\n' >"$out"; echo "error: stream closed before completion" >&2; exit 1 ;;
+  silent) ;;
   fail) echo "error: unexpected argument '--ephemeral' found" >&2; exit 2 ;;
   hang) echo "stream disconnected; retrying" >&2; exec sleep 5 ;;
 esac
 `;
 
+// Wraps the real git; FAKE_GIT_DIFF=fail|empty breaks the hook's diff capture
+// (`git diff --cached` without --quiet) and leaves every other call alone.
+const gitWrapper = (realGit: string) => `#!/bin/sh
+if [ "$1 $2" = "diff --cached" ] && [ "$3" != --quiet ]; then
+  case $FAKE_GIT_DIFF in
+    fail) echo "fatal: simulated diff failure" >&2; exit 128 ;;
+    empty) exit 0 ;;
+  esac
+fi
+exec "${realGit}" "$@"
+`;
+
 let scratch: string;
 let pathWithCodex: string;
 let pathWithoutCodex: string;
+let pathWithGitWrapper: string;
 let seq = 0;
 
 beforeAll(() => {
@@ -44,6 +59,13 @@ beforeAll(() => {
     .filter((dir) => dir && !existsSync(join(dir, "codex")))
     .join(delimiter);
   pathWithCodex = [fakeBin, pathWithoutCodex].join(delimiter);
+  const realGit = Bun.which("git");
+  if (!realGit) throw new Error("git not found on PATH");
+  const gitBin = join(scratch, "gitbin");
+  mkdirSync(gitBin);
+  writeFileSync(join(gitBin, "git"), gitWrapper(realGit));
+  chmodSync(join(gitBin, "git"), 0o755);
+  pathWithGitWrapper = [gitBin, pathWithCodex].join(delimiter);
 });
 
 afterAll(() => {
@@ -92,6 +114,20 @@ function commit(repo: string, opts: { codex?: boolean; extra?: Record<string, st
   return { code: p.exitCode, err: p.stderr.toString(), committed, calls };
 }
 
+// Runs the hook directly rather than through `git commit`, because git puts its
+// own exec-path first on a hook's PATH, which would bypass the git wrapper.
+function runHookWithGitWrapper(repo: string, fakeGitDiff: string): Commit {
+  const calls = mkdtempSync(join(scratch, "calls-"));
+  const p = Bun.spawnSync(["sh", join(repo, ".githooks", "pre-commit")], {
+    cwd: repo,
+    env: {
+      ...env(true, { FAKE_CODEX_DIR: calls, FAKE_CODEX_MODE: "allow", FAKE_GIT_DIFF: fakeGitDiff }),
+      PATH: pathWithGitWrapper,
+    },
+  });
+  return { code: p.exitCode, err: p.stderr.toString(), committed: false, calls };
+}
+
 const called = (c: Commit) => existsSync(join(c.calls, "args"));
 const callArgs = (c: Commit) => readFileSync(join(c.calls, "args"), "utf8").split("\n");
 
@@ -117,6 +153,18 @@ describe("verdicts", () => {
     expect(stdin).toContain("+hello");
   });
 
+  test("the captured diff is plain, whatever diff.external and color settings say", () => {
+    const repo = stagedRepo();
+    git(repo, "config", "diff.external", "echo EXTERNAL-DIFF");
+    git(repo, "config", "color.ui", "always");
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    const stdin = readFileSync(join(c.calls, "stdin"), "utf8");
+    expect(stdin).toContain("+hello");
+    expect(stdin).not.toContain("EXTERNAL-DIFF");
+    expect(stdin).not.toContain("\x1b[");
+  });
+
   test("BLOCK stops the commit and shows the findings", () => {
     const repo = stagedRepo();
     const c = commit(repo, { extra: { FAKE_CODEX_MODE: "block" } });
@@ -128,7 +176,7 @@ describe("verdicts", () => {
   });
 });
 
-describe("codex failures fail closed and say why", () => {
+describe("failures fail closed and say why", () => {
   test("codex's own error is shown when it produces no verdict", () => {
     const repo = stagedRepo();
     const c = commit(repo, { extra: { FAKE_CODEX_MODE: "fail" } });
@@ -136,6 +184,43 @@ describe("codex failures fail closed and say why", () => {
     expect(c.committed).toBe(false);
     expect(c.err).toContain("codex exited with status 2");
     expect(c.err).toContain("error: unexpected argument '--ephemeral' found");
+  });
+
+  test("an ALLOW verdict from a codex that then fails is ignored", () => {
+    const repo = stagedRepo();
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow-then-fail" } });
+    expect(c.code).not.toBe(0);
+    expect(c.committed).toBe(false);
+    expect(c.err).toContain("codex exited with status 1, so any verdict it wrote is ignored");
+    expect(c.err).toContain("error: stream closed before completion");
+  });
+
+  test("a codex that exits 0 without a verdict blocks", () => {
+    const repo = stagedRepo();
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "silent" } });
+    expect(c.code).not.toBe(0);
+    expect(c.committed).toBe(false);
+    expect(c.err).toContain("codex wrote no review verdict");
+  });
+
+  test("a failed diff capture blocks without calling codex", () => {
+    const c = runHookWithGitWrapper(stagedRepo(), "fail");
+    expect(c.code).toBe(1);
+    expect(c.err).toContain("could not capture the staged diff");
+    expect(called(c)).toBe(false);
+  });
+
+  test("an empty diff capture blocks without calling codex", () => {
+    const c = runHookWithGitWrapper(stagedRepo(), "empty");
+    expect(c.code).toBe(1);
+    expect(c.err).toContain("could not capture the staged diff");
+    expect(called(c)).toBe(false);
+  });
+
+  test("the git wrapper leaves a healthy capture alone", () => {
+    const c = runHookWithGitWrapper(stagedRepo(), "");
+    expect(c.code).toBe(0);
+    expect(called(c)).toBe(true);
   });
 
   test.skipIf(!Bun.which("timeout"))("a timeout is reported as a timeout, with codex's output so far", () => {

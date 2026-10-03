@@ -79,11 +79,15 @@ This vendors `skills/codex-review/SKILL.md` into `.claude/skills/codex-review/` 
 
 ## Enforce a review at every commit (optional, by hand)
 
-With the plugin, `/codex-review:init` does this for you. Otherwise, install the git hook yourself. It runs the `ALLOW:` / `BLOCK:` review, is **fail-closed** (a missing or erroring `codex` blocks the commit — never waved through), and **skips** empty / message-only and merge/cherry-pick/revert commits.
+With the plugin, `/codex-review:init` does this for you. Otherwise, install the git hook yourself. It runs the `ALLOW:` / `BLOCK:` review, is **fail-closed** (a commit passes only when the staged diff was captured and `codex` exits successfully with `ALLOW:`; a missing or erroring `codex` or a failed diff capture blocks it — never waved through), and **skips** empty / message-only and merge/cherry-pick/revert commits.
+
+Run this from the root of the repository you want to protect:
 
 ```bash
 mkdir -p .githooks
-cp hooks/pre-commit .githooks/pre-commit
+curl -fsSL https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/main/hooks/pre-commit \
+  -o .githooks/pre-commit
+# or copy it from a local clone: cp /path/to/codex-cc-skill/hooks/pre-commit .githooks/pre-commit
 chmod +x .githooks/pre-commit
 git config core.hooksPath .githooks   # once per clone
 ```

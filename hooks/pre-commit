@@ -4,11 +4,17 @@
 # Standalone: needs only the `codex` CLI (https://github.com/openai/codex) + git.
 #   Requires: codex-cli 0.119.0 or newer (for a working `codex exec --ephemeral`)
 #   Install:  npm install -g @openai/codex  &&  codex login
-#   Enable:   cp hooks/pre-commit .githooks/pre-commit && chmod +x .githooks/pre-commit
+#   Enable:   from the root of the repository to protect (the README also shows curl):
+#             mkdir -p .githooks
+#             cp /path/to/codex-cc-skill/hooks/pre-commit .githooks/pre-commit
+#             chmod +x .githooks/pre-commit
 #             git config core.hooksPath .githooks      # once per clone
+#             or, with the codex-review Claude Code plugin: /codex-review:init
 #   Bypass:   git commit --no-verify   OR   CODEX_GATE_BYPASS=1 git commit ...
 #
-# Fail-closed: if codex is missing/errors, the commit is blocked (not waved through).
+# Fail-closed: the commit passes only when the staged diff was captured and
+# codex exits 0 with a verdict starting 'ALLOW:'. A missing codex, a failed
+# diff capture, or a codex error or timeout blocks it (never waved through).
 #
 # IMPORTANT — codex is run FULLY ISOLATED from this repo: the staged diff is
 # captured to a temp file, codex's cwd is a throwaway temp dir (-C), and every
@@ -17,7 +23,7 @@
 # a "curated-sync" that RESETS the repo's HEAD. Isolation also guarantees no
 # repository-derived value is passed through a shell (cf. codex-plugin-cc #447).
 # The run is --ephemeral, so staged diffs never pile up in codex's session
-# history. When codex produces no verdict, the tail of its output is shown.
+# history. When codex fails or writes no verdict, the tail of its output is shown.
 #
 # Derived from the stop-review-gate in openai/codex-plugin-cc (Apache-2.0).
 
@@ -43,8 +49,13 @@ command -v timeout >/dev/null 2>&1 && codex="timeout ${CODEX_GATE_TIMEOUT:-840} 
 tmp=$(mktemp -d) || { echo "[codex-review-gate] mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 
-# Capture the staged diff while the git environment is still valid.
-git diff --cached >"$tmp/staged.diff"
+# Capture the staged diff while the git environment is still valid. Plain
+# output only: no external diff driver, no color codes from user config.
+if ! git diff --cached --no-ext-diff --no-color >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
+  echo "[codex-review-gate] commit blocked — could not capture the staged diff for review ('git diff --cached' failed or printed nothing)." >&2
+  echo "Human override: git commit --no-verify  or  CODEX_GATE_BYPASS=1" >&2
+  exit 1
+fi
 
 # Run codex with NO handle on this repo: cwd is the temp dir, and every GIT_*
 # variable git exported for this hook is unset. The diff is read from the file.
@@ -56,19 +67,22 @@ git diff --cached >"$tmp/staged.diff"
 )
 rc=$?
 
-if head -n 1 "$tmp/verdict" 2>/dev/null | grep -q '^ALLOW:'; then
+# A verdict only counts when codex itself succeeded.
+if [ "$rc" = 0 ] && head -n 1 "$tmp/verdict" 2>/dev/null | grep -q '^ALLOW:'; then
   exit 0
 fi
 
 echo "[codex-review-gate] commit blocked — Codex review did not pass:" >&2
 echo >&2
-if [ -s "$tmp/verdict" ]; then
+if [ "$rc" = 0 ] && [ -s "$tmp/verdict" ]; then
   cat "$tmp/verdict" >&2
 else
   if [ "$rc" = 124 ]; then
     echo "(codex timed out after ${CODEX_GATE_TIMEOUT:-840}s; raise CODEX_GATE_TIMEOUT for a large diff. The end of its output follows.)" >&2
+  elif [ "$rc" != 0 ]; then
+    echo "(codex exited with status $rc, so any verdict it wrote is ignored; the end of its output follows. Check 'codex login' and that codex-cli is 0.119.0 or newer.)" >&2
   else
-    echo "(no review output — codex exited with status $rc; the end of its output follows. Check 'codex login' and that codex-cli is 0.119.0 or newer.)" >&2
+    echo "(codex wrote no review verdict; the end of its output follows.)" >&2
   fi
   tail -n 20 "$tmp/codex.log" >&2 2>/dev/null
 fi
