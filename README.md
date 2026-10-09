@@ -79,7 +79,7 @@ This vendors `skills/codex-review/SKILL.md` into `.claude/skills/codex-review/` 
 
 ## Enforce a review at every commit (optional, by hand)
 
-With the plugin, `/codex-review:init` does this for you. Otherwise, install the git hook yourself. It runs the `ALLOW:` / `BLOCK:` review, is **fail-closed** (a commit passes only when the staged diff was captured and `codex` exits successfully with `ALLOW:`; a missing or erroring `codex` or a failed diff capture blocks it — never waved through), and **skips** empty / message-only and merge/cherry-pick/revert commits.
+With the plugin, `/codex-review:init` does this for you. Otherwise, install the git hook yourself. It runs the `ALLOW:` / `BLOCK:` review, is **fail-closed** (a commit passes only when the staged diff was captured and `codex` exits successfully with `ALLOW:`; a missing or erroring `codex` or a failed diff capture blocks it — never waved through), and **skips** empty / message-only commits. Concluding a merge, cherry-pick or revert by hand (after a conflict, or `--no-commit`) is reviewed against git's own automatic result, so Codex sees only the conflict resolutions and any extra edits, not the changes being brought in; a commit identical to git's result passes without a review. That needs git 2.40+; with an older git, an octopus merge, or a root commit, the whole staged diff is reviewed instead.
 
 Run this from the root of the repository you want to protect:
 

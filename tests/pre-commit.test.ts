@@ -30,7 +30,8 @@ esac
 `;
 
 // Wraps the real git; FAKE_GIT_DIFF=fail|empty breaks the hook's diff capture
-// (`git diff --cached` without --quiet) and leaves every other call alone.
+// (`git diff --cached` without --quiet), FAKE_GIT_MERGE_TREE=fail fails
+// `git merge-tree` like a git too old for it, and every other call is left alone.
 const gitWrapper = (realGit: string) => `#!/bin/sh
 if [ "$1 $2" = "diff --cached" ] && [ "$3" != --quiet ]; then
   case $FAKE_GIT_DIFF in
@@ -38,8 +39,18 @@ if [ "$1 $2" = "diff --cached" ] && [ "$3" != --quiet ]; then
     empty) exit 0 ;;
   esac
 fi
+if [ "$1" = merge-tree ] && [ "$FAKE_GIT_MERGE_TREE" = fail ]; then
+  echo "error: unknown option \\\`write-tree'" >&2; exit 129
+fi
 exec "${realGit}" "$@"
 `;
+
+// The hook recomputes git's own merge/cherry-pick/revert result with
+// `git merge-tree --write-tree --merge-base`, which needs git 2.40 or newer.
+const [gitMajor, gitMinor] = (Bun.spawnSync(["git", "--version"]).stdout.toString().match(/(\d+)\.(\d+)/) ?? [])
+  .slice(1)
+  .map(Number);
+const hasMergeTreeBase = gitMajor > 2 || (gitMajor === 2 && gitMinor >= 40);
 
 let scratch: string;
 let pathWithCodex: string;
@@ -89,17 +100,57 @@ function git(cwd: string, ...args: string[]): string {
   return p.stdout.toString().trim();
 }
 
-// A repository with the gate active and one file staged.
-function stagedRepo(): string {
-  const repo = join(scratch, `repo-${++seq}`);
+function installGate(repo: string) {
   mkdirSync(join(repo, ".githooks"), { recursive: true });
-  git(repo, "init", "-q", "-b", "main");
   copyFileSync(GATE_SRC, join(repo, ".githooks", "pre-commit"));
   chmodSync(join(repo, ".githooks", "pre-commit"), 0o755);
   git(repo, "config", "core.hooksPath", ".githooks");
+}
+
+// A repository with the gate active and one file staged.
+function stagedRepo(): string {
+  const repo = join(scratch, `repo-${++seq}`);
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  installGate(repo);
   writeFileSync(join(repo, "src.txt"), "hello\n");
   git(repo, "add", "src.txt");
   return repo;
+}
+
+// Writes and commits files; used to build history before the gate is installed.
+function commitFiles(repo: string, msg: string, files: Record<string, string>) {
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(repo, name), text);
+  git(repo, "add", ...Object.keys(files));
+  git(repo, "commit", "-q", "-m", msg);
+}
+
+// A repository with the gate active on main. `feature` rewrote a.txt (which
+// main also rewrote, so it conflicts) and added c.txt; `side` and `side2`
+// each add one file and merge cleanly.
+function branchedRepo(): string {
+  const repo = join(scratch, `repo-${++seq}`);
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  git(repo, "config", "user.name", "Test");
+  git(repo, "config", "user.email", "test@example.com");
+  commitFiles(repo, "base", { "a.txt": "base\n" });
+  git(repo, "checkout", "-q", "-b", "feature");
+  commitFiles(repo, "feature", { "a.txt": "feature\n", "c.txt": "incoming\n" });
+  git(repo, "checkout", "-q", "-b", "side", "main");
+  commitFiles(repo, "side", { "s.txt": "side\n" });
+  git(repo, "checkout", "-q", "-b", "side2", "main");
+  commitFiles(repo, "side2", { "s2.txt": "side2\n" });
+  git(repo, "checkout", "-q", "main");
+  commitFiles(repo, "main", { "a.txt": "main\n" });
+  installGate(repo);
+  return repo;
+}
+
+// Settles the conflict in a.txt by hand.
+function resolve(repo: string) {
+  writeFileSync(join(repo, "a.txt"), "resolved\n");
+  git(repo, "add", "a.txt");
 }
 
 type Commit = { code: number; err: string; committed: boolean; calls: string };
@@ -116,12 +167,12 @@ function commit(repo: string, opts: { codex?: boolean; extra?: Record<string, st
 
 // Runs the hook directly rather than through `git commit`, because git puts its
 // own exec-path first on a hook's PATH, which would bypass the git wrapper.
-function runHookWithGitWrapper(repo: string, fakeGitDiff: string): Commit {
+function runHookWithGitWrapper(repo: string, fakes: Record<string, string>): Commit {
   const calls = mkdtempSync(join(scratch, "calls-"));
   const p = Bun.spawnSync(["sh", join(repo, ".githooks", "pre-commit")], {
     cwd: repo,
     env: {
-      ...env(true, { FAKE_CODEX_DIR: calls, FAKE_CODEX_MODE: "allow", FAKE_GIT_DIFF: fakeGitDiff }),
+      ...env(true, { FAKE_CODEX_DIR: calls, FAKE_CODEX_MODE: "allow", ...fakes }),
       PATH: pathWithGitWrapper,
     },
   });
@@ -130,6 +181,7 @@ function runHookWithGitWrapper(repo: string, fakeGitDiff: string): Commit {
 
 const called = (c: Commit) => existsSync(join(c.calls, "args"));
 const callArgs = (c: Commit) => readFileSync(join(c.calls, "args"), "utf8").split("\n");
+const callStdin = (c: Commit) => readFileSync(join(c.calls, "stdin"), "utf8");
 
 describe("verdicts", () => {
   test("ALLOW lets the commit through; codex runs isolated, read-only and ephemeral", () => {
@@ -204,21 +256,21 @@ describe("failures fail closed and say why", () => {
   });
 
   test("a failed diff capture blocks without calling codex", () => {
-    const c = runHookWithGitWrapper(stagedRepo(), "fail");
+    const c = runHookWithGitWrapper(stagedRepo(), { FAKE_GIT_DIFF: "fail" });
     expect(c.code).toBe(1);
     expect(c.err).toContain("could not capture the staged diff");
     expect(called(c)).toBe(false);
   });
 
   test("an empty diff capture blocks without calling codex", () => {
-    const c = runHookWithGitWrapper(stagedRepo(), "empty");
+    const c = runHookWithGitWrapper(stagedRepo(), { FAKE_GIT_DIFF: "empty" });
     expect(c.code).toBe(1);
     expect(c.err).toContain("could not capture the staged diff");
     expect(called(c)).toBe(false);
   });
 
   test("the git wrapper leaves a healthy capture alone", () => {
-    const c = runHookWithGitWrapper(stagedRepo(), "");
+    const c = runHookWithGitWrapper(stagedRepo(), {});
     expect(c.code).toBe(0);
     expect(called(c)).toBe(true);
   });
@@ -257,5 +309,108 @@ describe("skips", () => {
     expect(c.code).toBe(0);
     expect(c.committed).toBe(true);
     expect(called(c)).toBe(false);
+  });
+});
+
+describe.skipIf(!hasMergeTreeBase)("merge, cherry-pick and revert", () => {
+  const head = (repo: string) => git(repo, "rev-parse", "HEAD");
+  const reviewsResolutionOnly = (c: Commit, op: string) => {
+    expect(called(c)).toBe(true);
+    expect(callArgs(c)[1]).toContain(`This commit concludes a ${op}.`);
+    const stdin = callStdin(c);
+    expect(stdin).toContain("-<<<<<<<");
+    expect(stdin).toContain("+resolved");
+    // What was brought in, rather than written while resolving, is not re-reviewed.
+    expect(stdin).not.toContain("incoming");
+  };
+
+  test("a resolved merge conflict is reviewed, without the merged-in changes", () => {
+    const repo = branchedRepo();
+    git(repo, "merge", "feature");
+    resolve(repo);
+    const before = head(repo);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(head(repo)).not.toBe(before);
+    reviewsResolutionOnly(c, "merge");
+  });
+
+  test("a BLOCK on the resolution stops the merge commit", () => {
+    const repo = branchedRepo();
+    git(repo, "merge", "feature");
+    resolve(repo);
+    const before = head(repo);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "block" } });
+    expect(c.code).not.toBe(0);
+    expect(head(repo)).toBe(before);
+    expect(c.err).toContain("BLOCK: off-by-one");
+  });
+
+  test("a merge identical to git's own result commits without calling codex", () => {
+    const repo = branchedRepo();
+    git(repo, "merge", "--no-commit", "--no-ff", "side");
+    const before = head(repo);
+    const c = commit(repo);
+    expect(c.code).toBe(0);
+    expect(head(repo)).not.toBe(before);
+    expect(called(c)).toBe(false);
+  });
+
+  test("edits staged on top of a clean merge are reviewed", () => {
+    const repo = branchedRepo();
+    git(repo, "merge", "--no-commit", "--no-ff", "side");
+    writeFileSync(join(repo, "extra.txt"), "smuggled\n");
+    git(repo, "add", "extra.txt");
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(called(c)).toBe(true);
+    const stdin = callStdin(c);
+    expect(stdin).toContain("+smuggled");
+    expect(stdin).not.toContain("+side");
+  });
+
+  test("an octopus merge is reviewed in full", () => {
+    const repo = branchedRepo();
+    git(repo, "merge", "--no-commit", "--no-ff", "side", "side2");
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(callArgs(c)[1]).toContain("Review ONLY the staged diff");
+    const stdin = callStdin(c);
+    expect(stdin).toContain("+side\n");
+    expect(stdin).toContain("+side2\n");
+  });
+
+  test("a resolved cherry-pick conflict is reviewed, without the picked changes", () => {
+    const repo = branchedRepo();
+    git(repo, "cherry-pick", "feature");
+    resolve(repo);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    reviewsResolutionOnly(c, "cherry-pick");
+  });
+
+  test("a resolved revert conflict is reviewed, without the reverted changes", () => {
+    const repo = branchedRepo();
+    git(repo, "checkout", "-q", "feature");
+    // Rewrite a.txt again so reverting `feature` conflicts; c.txt reverts cleanly.
+    writeFileSync(join(repo, "a.txt"), "later\n");
+    git(repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-am", "later");
+    git(repo, "revert", "--no-edit", "HEAD~1");
+    resolve(repo);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    reviewsResolutionOnly(c, "revert");
+  });
+
+  test("when git's own result can't be recomputed, the whole staged diff is reviewed", () => {
+    const repo = branchedRepo();
+    git(repo, "merge", "feature");
+    resolve(repo);
+    const c = runHookWithGitWrapper(repo, { FAKE_GIT_MERGE_TREE: "fail" });
+    expect(c.code).toBe(0);
+    expect(callArgs(c)[1]).toContain("Review ONLY the staged diff");
+    const stdin = callStdin(c);
+    expect(stdin).toContain("+resolved");
+    expect(stdin).toContain("+incoming");
   });
 });

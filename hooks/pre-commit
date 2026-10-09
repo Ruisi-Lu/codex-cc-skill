@@ -16,6 +16,13 @@
 # codex exits 0 with a verdict starting 'ALLOW:'. A missing codex, a failed
 # diff capture, or a codex error or timeout blocks it (never waved through).
 #
+# Merge, cherry-pick and revert commits are not skipped. The hook recomputes
+# git's own automatic result (git merge-tree, git 2.40+) and reviews only what
+# the commit adds on top of it: conflict resolutions and any further edits. A
+# commit identical to that result passes without a review. When the result
+# can't be recomputed (older git, octopus merge, root commit), the whole staged
+# diff is reviewed instead.
+#
 # IMPORTANT — codex is run FULLY ISOLATED from this repo: the staged diff is
 # captured to a temp file, codex's cwd is a throwaway temp dir (-C), and every
 # GIT_* env var that git sets for hooks is unset before codex runs. This is
@@ -32,10 +39,37 @@
 # Nothing staged → nothing to review.
 git diff --cached --quiet && exit 0
 
-# Skip commits that aren't a plain edit-and-commit.
+# Concluding a merge, cherry-pick or revert: diff against git's automatic
+# result instead of HEAD. Any failure leaves base empty (full review).
+op='' base=''
 gitdir=$(git rev-parse --git-dir)
-if [ -e "$gitdir/MERGE_HEAD" ] || [ -e "$gitdir/CHERRY_PICK_HEAD" ] || [ -e "$gitdir/REVERT_HEAD" ]; then
-  exit 0
+if [ -f "$gitdir/MERGE_HEAD" ]; then
+  op=merge
+  # An octopus merge has one line per merged head; review it in full.
+  [ $(wc -l <"$gitdir/MERGE_HEAD") -eq 1 ] && set -- HEAD MERGE_HEAD
+elif [ -f "$gitdir/CHERRY_PICK_HEAD" ]; then
+  op=cherry-pick
+  set -- --merge-base=CHERRY_PICK_HEAD^ HEAD CHERRY_PICK_HEAD
+elif [ -f "$gitdir/REVERT_HEAD" ]; then
+  op=revert
+  set -- --merge-base=REVERT_HEAD HEAD REVERT_HEAD^
+fi
+if [ $# -gt 0 ]; then
+  # Exit 0 is a clean merge, 1 a conflicted one (the tree then holds the
+  # conflict markers); anything else is an error.
+  out=$(git merge-tree --write-tree "$@" 2>/dev/null)
+  if [ $? -le 1 ]; then
+    base=$(printf '%s\n' "$out" | head -n 1)
+    git rev-parse -q --verify "$base^{tree}" >/dev/null || base=''
+  fi
+fi
+# Exactly git's own result: the commit introduces nothing new to review.
+[ -n "$base" ] && git diff --cached --quiet --no-ext-diff "$base" && exit 0
+
+if [ -n "$base" ]; then
+  scope="This commit concludes a $op. The diff on stdin is taken against git's own automatic $op result rather than HEAD, so it holds only the conflict resolutions and any further edits (in conflicted hunks, the - side shows git's conflict markers). Review ONLY that diff."
+else
+  scope="Review ONLY the staged diff provided on stdin."
 fi
 
 if ! command -v codex >/dev/null 2>&1; then
@@ -51,7 +85,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 # Capture the staged diff while the git environment is still valid. Plain
 # output only: no external diff driver, no color codes from user config.
-if ! git diff --cached --no-ext-diff --no-color >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
+if ! git diff --cached --no-ext-diff --no-color ${base:+"$base"} >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
   echo "[codex-review-gate] commit blocked — could not capture the staged diff for review ('git diff --cached' failed or printed nothing)." >&2
   echo "Human override: git commit --no-verify  or  CODEX_GATE_BYPASS=1" >&2
   exit 1
@@ -62,7 +96,7 @@ fi
 (
   for v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
   $codex exec \
-    "You are a mandatory pre-commit code review gate. Review ONLY the staged diff provided on stdin. Your FIRST line MUST be exactly 'ALLOW: <reason>' or 'BLOCK: <reason>'. BLOCK only for real problems introduced by this diff (correctness bugs, security/authorization holes, data loss, broken error handling, resource/lifecycle leaks, clear regressions); when you BLOCK, list each finding after the first line as 'file:line — problem — fix'. Do not block on style, nitpicks, or pre-existing issues unrelated to this diff." \
+    "You are a mandatory pre-commit code review gate. $scope Your FIRST line MUST be exactly 'ALLOW: <reason>' or 'BLOCK: <reason>'. BLOCK only for real problems introduced by this diff (correctness bugs, security/authorization holes, data loss, broken error handling, resource/lifecycle leaks, clear regressions); when you BLOCK, list each finding after the first line as 'file:line — problem — fix'. Do not block on style, nitpicks, or pre-existing issues unrelated to this diff." \
     -C "$tmp" --skip-git-repo-check --ephemeral -s read-only --color never -o "$tmp/verdict" <"$tmp/staged.diff" >/dev/null 2>"$tmp/codex.log"
 )
 rc=$?
