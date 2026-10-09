@@ -36,8 +36,16 @@
 
 [ "$CODEX_GATE_BYPASS" = "1" ] && exit 0
 
+# Every look at the staged changes compares raw content: an external diff
+# driver, a textconv filter or a submodule ignore setting could otherwise
+# hide a staged change or show the reviewer something other than what is
+# committed.
+staged_diff() {
+  git diff --cached --no-ext-diff --no-textconv --ignore-submodules=none "$@"
+}
+
 # Nothing staged → nothing to review.
-git diff --cached --quiet && exit 0
+staged_diff --quiet && exit 0
 
 # Concluding a merge, cherry-pick or revert: diff against git's automatic
 # result instead of HEAD. Any failure leaves base empty (full review).
@@ -64,7 +72,7 @@ if [ $# -gt 0 ]; then
   fi
 fi
 # Exactly git's own result: the commit introduces nothing new to review.
-[ -n "$base" ] && git diff --cached --quiet --no-ext-diff "$base" && exit 0
+[ -n "$base" ] && staged_diff --quiet "$base" && exit 0
 
 if [ -n "$base" ]; then
   scope="This commit concludes a $op. The diff on stdin is taken against git's own automatic $op result rather than HEAD, so it holds only the conflict resolutions and any further edits (in conflicted hunks, the - side shows git's conflict markers). Review ONLY that diff."
@@ -84,8 +92,8 @@ tmp=$(mktemp -d) || { echo "[codex-review-gate] mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 
 # Capture the staged diff while the git environment is still valid. Plain
-# output only: no external diff driver, no color codes from user config.
-if ! git diff --cached --no-ext-diff --no-color ${base:+"$base"} >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
+# output only: raw content, no color codes from user config.
+if ! staged_diff --no-color ${base:+"$base"} >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
   echo "[codex-review-gate] commit blocked — could not capture the staged diff for review ('git diff --cached' failed or printed nothing)." >&2
   echo "Human override: git commit --no-verify  or  CODEX_GATE_BYPASS=1" >&2
   exit 1

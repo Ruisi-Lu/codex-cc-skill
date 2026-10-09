@@ -33,10 +33,15 @@ esac
 // (`git diff --cached` without --quiet), FAKE_GIT_MERGE_TREE=fail fails
 // `git merge-tree` like a git too old for it, and every other call is left alone.
 const gitWrapper = (realGit: string) => `#!/bin/sh
-if [ "$1 $2" = "diff --cached" ] && [ "$3" != --quiet ]; then
-  case $FAKE_GIT_DIFF in
-    fail) echo "fatal: simulated diff failure" >&2; exit 128 ;;
-    empty) exit 0 ;;
+if [ "$1 $2" = "diff --cached" ]; then
+  case " $* " in
+    *" --quiet "*) ;;
+    *)
+      case $FAKE_GIT_DIFF in
+        fail) echo "fatal: simulated diff failure" >&2; exit 128 ;;
+        empty) exit 0 ;;
+      esac
+      ;;
   esac
 fi
 if [ "$1" = merge-tree ] && [ "$FAKE_GIT_MERGE_TREE" = fail ]; then
@@ -203,6 +208,50 @@ describe("verdicts", () => {
     const stdin = readFileSync(join(c.calls, "stdin"), "utf8");
     expect(stdin).toContain("+++ b/src.txt");
     expect(stdin).toContain("+hello");
+  });
+
+  test("a textconv filter can neither hide a staged change nor rewrite what is reviewed", () => {
+    const repo = join(scratch, `repo-${++seq}`);
+    mkdirSync(repo);
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "config", "user.name", "Test");
+    git(repo, "config", "user.email", "test@example.com");
+    // Both versions of a.bin convert to the same text.
+    git(repo, "config", "diff.same.textconv", "sh -c 'echo same' --");
+    commitFiles(repo, "base", { ".gitattributes": "*.bin diff=same\n", "a.bin": "one\n" });
+    installGate(repo);
+    writeFileSync(join(repo, "a.bin"), "two\n");
+    git(repo, "add", "a.bin");
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(called(c)).toBe(true);
+    const stdin = callStdin(c);
+    expect(stdin).toContain("-one");
+    expect(stdin).toContain("+two");
+    expect(stdin).not.toContain("same");
+  });
+
+  test("a submodule ignore setting can't hide a staged submodule change", () => {
+    const sub = join(scratch, `sub-${++seq}`);
+    mkdirSync(sub);
+    git(sub, "init", "-q", "-b", "main");
+    git(sub, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "s1");
+    const repo = join(scratch, `repo-${++seq}`);
+    mkdirSync(repo);
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "config", "user.name", "Test");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub");
+    git(repo, "config", "-f", ".gitmodules", "submodule.sub.ignore", "all");
+    git(repo, "add", ".gitmodules");
+    git(repo, "commit", "-q", "-m", "add sub");
+    installGate(repo);
+    git(join(repo, "sub"), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "s2");
+    git(repo, "add", "--force", "sub");
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(called(c)).toBe(true);
+    expect(callStdin(c)).toContain("+Subproject commit");
   });
 
   test("the captured diff is plain, whatever diff.external and color settings say", () => {
