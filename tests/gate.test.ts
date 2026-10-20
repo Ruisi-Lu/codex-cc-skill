@@ -202,9 +202,9 @@ describe("gate that differs from the plugin copy", () => {
     expect(stateOf(check)).toBe("differs");
     expect(check.out).toContain("replace .githooks/pre-commit");
     expect(check.out).toContain("set core.hooksPath=.githooks");
-    expect(hookJson(gate("hook", repo)).hookSpecificOutput.additionalContext).toContain(
-      "not activated in this clone",
-    );
+    // The session-start check activates the plugin's own copy, never this edit.
+    expect(hookJson(gate("hook", repo)).systemMessage).toContain("activated the plugin's copy");
+    expect(readFileSync(join(repo, ".git", "hooks", "pre-commit"), "utf8")).toBe(readFileSync(GATE_SRC, "utf8"));
     expect(gate("install", repo).code).toBe(0);
     expect(stateOf(gate("check", repo))).toBe("installed");
   });
@@ -220,11 +220,11 @@ describe("gate that differs from the plugin copy", () => {
 });
 
 describe("conflicts fail closed", () => {
-  function expectRefused(repo: string, reason: string) {
+  function expectRefused(repo: string, reason: string, notice = true) {
     const check = gate("check", repo);
     expect(stateOf(check)).toBe("conflict");
     expect(check.out).toContain(reason);
-    expect(hookJson(gate("hook", repo)).systemMessage).toContain("manual decision");
+    if (notice) expect(hookJson(gate("hook", repo)).systemMessage).toContain("manual decision");
     const res = gate("install", repo);
     expect(res.code).toBe(2);
     expect(res.err).toContain("nothing was written");
@@ -260,7 +260,8 @@ describe("conflicts fail closed", () => {
     const repo = newRepo();
     mkdirSync(join(repo, ".githooks"));
     symlinkSync(GATE_SRC, join(repo, ".githooks", "pre-commit"));
-    expectRefused(repo, "is a symlink");
+    // It still signals a shipped gate, so the session-start check activates the plugin's copy.
+    expectRefused(repo, "is a symlink", false);
   });
 
   test("a symlinked .githooks directory is never written through", () => {
@@ -336,5 +337,192 @@ describe("codex auth detection", () => {
     expect(res.code).toBe(0);
     expect(res.out).toContain("codex auth: NOT verified");
     expect(gate("install", repo, true, notLoggedIn).code).toBe(0);
+  });
+});
+
+// A clone of a repository whose history already carries the bundled gate.
+function shippedRepo(content = readFileSync(GATE_SRC)): string {
+  const repo = newRepo();
+  mkdirSync(join(repo, ".githooks"));
+  writeFileSync(join(repo, ".githooks", "pre-commit"), content);
+  chmodSync(join(repo, ".githooks", "pre-commit"), 0o755);
+  return repo;
+}
+
+function guard(cwd: string, command: string, extra: Record<string, string> = {}): Result {
+  const input = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } });
+  const p = Bun.spawnSync(["sh", GATE, "guard"], { cwd, env: env(cwd, true, extra), stdin: Buffer.from(input) });
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
+}
+
+const denied = (res: Result) => {
+  expect(res.code).toBe(0);
+  return res.out !== "" && JSON.parse(res.out).hookSpecificOutput.permissionDecision === "deny";
+};
+
+describe("a repository that ships the gate activates it in every clone", () => {
+  const localHook = (repo: string) => join(repo, ".git", "hooks", "pre-commit");
+
+  test("hook installs the plugin's own copy in .git/hooks and says so", () => {
+    const repo = shippedRepo();
+    const out = hookJson(gate("hook", repo));
+    expect(out.systemMessage).toContain("activated the plugin's copy");
+    expect(readFileSync(localHook(repo), "utf8")).toBe(readFileSync(GATE_SRC, "utf8"));
+    expect(statSync(localHook(repo)).mode & 0o111).not.toBe(0);
+    expect(git(repo, "config", "--get", "core.hooksPath")).toBe("");
+    expect(gate("check", repo).out).toContain("clone: the plugin's own gate runs from");
+    expect(guard(repo, "git commit -m x").out).toBe("");
+    expect(gate("hook", repo).out).toBe("");
+  });
+
+  test("never runs repository content: a modified shipped gate and extra hooks stay inert", () => {
+    const repo = shippedRepo(readFileSync(GATE_SRC, "utf8") + "touch pwned\n");
+    writeFileSync(join(repo, ".githooks", "post-checkout"), "#!/bin/sh\ntouch pwned\n");
+    hookJson(gate("hook", repo));
+    expect(readFileSync(localHook(repo), "utf8")).toBe(readFileSync(GATE_SRC, "utf8"));
+    expect(existsSync(join(repo, ".git", "hooks", "post-checkout"))).toBe(false);
+    expect(git(repo, "config", "--get", "core.hooksPath")).toBe("");
+  });
+
+  test("an outdated plugin-owned copy is refreshed silently", () => {
+    const repo = shippedRepo();
+    writeFileSync(localHook(repo), readFileSync(GATE_SRC, "utf8") + "# old release\n");
+    chmodSync(localHook(repo), 0o755);
+    expect(gate("hook", repo).out).toBe("");
+    expect(readFileSync(localHook(repo), "utf8")).toBe(readFileSync(GATE_SRC, "utf8"));
+  });
+
+  test("other hooks in .git/hooks keep running", () => {
+    const repo = shippedRepo();
+    writeFileSync(join(repo, ".git", "hooks", "pre-push"), "#!/bin/sh\nexit 0\n");
+    hookJson(gate("hook", repo));
+    expect(existsSync(localHook(repo))).toBe(true);
+    expect(git(repo, "config", "--get", "core.hooksPath")).toBe("");
+  });
+
+  test("skipInit does not opt out of a shipped gate", () => {
+    const repo = shippedRepo();
+    git(repo, "config", "codex-review.skipInit", "true");
+    hookJson(gate("hook", repo));
+    expect(existsSync(localHook(repo))).toBe(true);
+  });
+
+  test("without codex nothing is activated, the notice says why, and guard blocks", () => {
+    const repo = shippedRepo();
+    const out = hookJson(gate("hook", repo, false));
+    expect(out.hookSpecificOutput.additionalContext).toContain("codex CLI is not on PATH");
+    expect(out.hookSpecificOutput.additionalContext).toContain("blocked until the gate is active");
+    expect(existsSync(localHook(repo))).toBe(false);
+    expect(denied(guard(repo, "git commit -m x"))).toBe(true);
+  });
+
+  test("a foreign .git/hooks/pre-commit is never replaced", () => {
+    const repo = shippedRepo();
+    const foreign = "#!/bin/sh\necho mine\n";
+    writeFileSync(localHook(repo), foreign);
+    git(repo, "config", "codex-review.skipInit", "true");
+    const out = hookJson(gate("hook", repo));
+    expect(out.hookSpecificOutput.additionalContext).toContain("blocked until the gate is active");
+    expect(readFileSync(localHook(repo), "utf8")).toBe(foreign);
+  });
+
+  test("another core.hooksPath is left alone", () => {
+    const repo = shippedRepo();
+    git(repo, "config", "core.hooksPath", ".husky/_");
+    hookJson(gate("hook", repo));
+    expect(existsSync(localHook(repo))).toBe(false);
+    expect(git(repo, "config", "--get", "core.hooksPath")).toBe(".husky/_");
+  });
+
+  test("install over a clone-local copy points core.hooksPath at .githooks", () => {
+    const repo = shippedRepo();
+    hookJson(gate("hook", repo));
+    expect(stateOf(gate("check", repo))).toBe("missing");
+    expect(gate("install", repo).code).toBe(0);
+    expect(git(repo, "config", "--get", "core.hooksPath")).toBe(".githooks");
+  });
+});
+
+describe("guard blocks Claude's commits while a shipped gate is inactive", () => {
+  test("denies git commit spelled in several ways", () => {
+    const repo = shippedRepo(readFileSync(GATE_SRC, "utf8") + "# local edit\n");
+    for (const cmd of [
+      "git commit -m x",
+      "git -C . commit -m x",
+      "git add . && git commit -m 'a \"quoted\" msg'",
+      "git add .\ngit commit -m x",
+      "cd sub; git\tcommit --amend",
+    ]) {
+      expect(denied(guard(repo, cmd))).toBe(true);
+    }
+  });
+
+  test("allows commands that are not commits", () => {
+    const repo = shippedRepo(readFileSync(GATE_SRC, "utf8") + "# local edit\n");
+    for (const cmd of ["git status", "ls commit", "echo digit commit", "git config core.hooksPath .githooks"]) {
+      expect(guard(repo, cmd)).toEqual({ code: 0, out: "", err: "" });
+    }
+  });
+
+  test("checks the repository in the hook's cwd", () => {
+    const shipped = shippedRepo(readFileSync(GATE_SRC, "utf8") + "# local edit\n");
+    const input = JSON.stringify({ tool_name: "Bash", cwd: shipped, tool_input: { command: "git commit -m x" } });
+    const other = newRepo();
+    const p = Bun.spawnSync(["sh", GATE, "guard"], { cwd: other, env: env(other, true), stdin: Buffer.from(input) });
+    expect(JSON.parse(p.stdout.toString()).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  test("allows commits once the gate is active", () => {
+    const repo = shippedRepo();
+    git(repo, "config", "core.hooksPath", ".githooks");
+    expect(guard(repo, "git commit -m x").out).toBe("");
+  });
+
+  test("a non-executable gate is not active", () => {
+    const repo = shippedRepo();
+    git(repo, "config", "core.hooksPath", ".githooks");
+    chmodSync(join(repo, ".githooks", "pre-commit"), 0o644);
+    expect(denied(guard(repo, "git commit -m x"))).toBe(true);
+  });
+
+  test("a gate wired in through another hook manager can be recorded", () => {
+    const repo = shippedRepo();
+    git(repo, "config", "core.hooksPath", ".husky/_");
+    expect(denied(guard(repo, "git commit -m x"))).toBe(true);
+    git(repo, "config", "codex-review.gateWired", "true");
+    expect(guard(repo, "git commit -m x").out).toBe("");
+  });
+
+  test("stays out of repositories that do not ship the gate", () => {
+    expect(guard(newRepo(), "git commit -m x").out).toBe("");
+    const plain = join(scratch, `plain-${++seq}`);
+    mkdirSync(plain);
+    expect(guard(plain, "git commit -m x").out).toBe("");
+  });
+});
+
+describe("check reports the team plugin setting", () => {
+  test("enabled and not enabled", () => {
+    const repo = newRepo();
+    expect(gate("check", repo).out).toContain("team plugin: NOT enabled");
+    mkdirSync(join(repo, ".claude"));
+    writeFileSync(
+      join(repo, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { "codex-review@codex-cc-skill": true } }),
+    );
+    expect(gate("check", repo).out).toContain("no extraKnownMarketplaces entry");
+    writeFileSync(
+      join(repo, ".claude", "settings.json"),
+      JSON.stringify({
+        extraKnownMarketplaces: { "codex-cc-skill": { source: { source: "github", repo: "o/r" } } },
+        enabledPlugins: { "codex-review@codex-cc-skill": true },
+      }),
+    );
+    expect(gate("check", repo).out).toContain("team plugin: enabled in");
+    writeFileSync(
+      join(repo, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { "codex-review@codex-cc-skill": false } }),
+    );
+    expect(gate("check", repo).out).toContain("team plugin: DISABLED");
   });
 });

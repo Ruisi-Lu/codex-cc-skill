@@ -1,6 +1,18 @@
 {
-  "description": "Offer to install the Codex pre-commit gate when the current repository does not have it active",
+  "description": "Activate the Codex pre-commit gate in clones of a repository that ships it, offer to install it where it is missing, and block Claude's commits while a shipped gate is inactive",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh\" guard",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|clear",

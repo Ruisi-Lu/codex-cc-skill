@@ -9,7 +9,7 @@
     {
       "name": "codex-review",
       "source": "./",
-      "description": "On-demand Codex review skill plus a fail-closed git pre-commit gate, with a session-start check that offers to install the gate where it is missing."
+      "description": "On-demand Codex review skill plus a fail-closed git pre-commit gate, with hooks that activate a gate the repository ships in every clone and offer to install it where it is missing."
     }
   ]
 }
