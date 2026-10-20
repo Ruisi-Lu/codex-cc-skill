@@ -313,6 +313,20 @@ run_check() {
   # Teammates' Claude Code offers the plugin when the repository enables it
   # and names its marketplace.
   settings=.claude/settings.json
+  # An organization-distributed copy (claude.ai sync, loaded as @synced) already
+  # reaches every member; enabling the marketplace too would load it twice.
+  case $plugin_root in
+    */plugins/synced/*)
+      echo "team plugin: provided by your organization (claude.ai synced plugin); $settings needs no entry"
+      ;;
+    *) team_plugin ;;
+  esac
+  [ -n "$plan" ] && printf 'plan:\n%s' "$plan"
+  [ -n "$conflicts" ] && printf 'conflicts:\n%s' "$conflicts"
+  exit 0
+}
+
+team_plugin() {
   if grep -Eq '"codex-review@codex-cc-skill"[ 	]*:[ 	]*false' "$settings" 2>/dev/null; then
     echo "team plugin: DISABLED (set to false) in $settings"
   elif ! grep -Eq '"codex-review@codex-cc-skill"[ 	]*:[ 	]*true' "$settings" 2>/dev/null; then
@@ -322,9 +336,6 @@ run_check() {
   else
     echo "team plugin: enabled in $settings"
   fi
-  [ -n "$plan" ] && printf 'plan:\n%s' "$plan"
-  [ -n "$conflicts" ] && printf 'conflicts:\n%s' "$conflicts"
-  exit 0
 }
 
 run_install() {

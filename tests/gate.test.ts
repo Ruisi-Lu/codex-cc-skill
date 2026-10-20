@@ -526,3 +526,19 @@ describe("check reports the team plugin setting", () => {
     expect(gate("check", repo).out).toContain("team plugin: DISABLED");
   });
 });
+
+describe("organization-distributed plugin", () => {
+  test("check says the team setting is not needed", () => {
+    // Mimic claude.ai's synced layout: <home>/.claude/plugins/synced/<id>/codex-review
+    const root = join(scratch, `org-${++seq}`, ".claude", "plugins", "synced", "org-id", "codex-review");
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    mkdirSync(join(root, "hooks"));
+    writeFileSync(join(root, "scripts", "gate.sh"), readFileSync(GATE));
+    writeFileSync(join(root, "hooks", "pre-commit"), readFileSync(GATE_SRC));
+    const repo = newRepo();
+    const p = Bun.spawnSync(["sh", join(root, "scripts", "gate.sh"), "check"], { cwd: repo, env: env(repo, true) });
+    const out = p.stdout.toString();
+    expect(out).toContain("team plugin: provided by your organization");
+    expect(out).toContain("plan:");
+  });
+});

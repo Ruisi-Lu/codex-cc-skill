@@ -1,6 +1,6 @@
 {
   "name": "codex-review",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Independent Codex code review for Claude Code: an on-demand review skill, plus a fail-closed git pre-commit gate that /codex-review:init installs into a repository and the plugin then activates in every clone.",
   "author": {
     "name": "Ruisi Lu",

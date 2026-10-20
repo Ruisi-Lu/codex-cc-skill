@@ -45,6 +45,8 @@ If the `team plugin:` line says `NOT enabled`, add one more row to the plan: mer
 
 Use the GitHub repository the user installed the marketplace from (a fork, if that is where it came from), never a local path: this file is shared with every collaborator. If `enabledPlugins` already sets `codex-review@codex-cc-skill` to `false`, someone turned it off on purpose; ask before changing it.
 
+Skip this merge when `team plugin:` says `provided by your organization`, or when this plugin is otherwise not loaded as `codex-review@codex-cc-skill` (for example an organization-distributed `codex-review@synced`): the organization already delivers it to every member, and adding the marketplace too would load the plugin twice.
+
 Show the `plan:` lines as a short table (change → create / replace / config / merge) and say plainly what it means: every commit will run one Codex review (up to `CODEX_GATE_TIMEOUT`, default 840s) and is blocked unless Codex answers `ALLOW:`. For `differs`, first show what would change and say which way it goes — the repository's copy may be an older release, a **newer** one (a teammate on a newer plugin version; then recommend updating the plugin instead of replacing it), or a local edit the user wants to keep:
 
 ```bash
