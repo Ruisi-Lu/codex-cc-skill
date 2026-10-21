@@ -34,13 +34,14 @@ nl='
 
 # Resolve the gate state of the repository containing the cwd. Sets: state
 # (not-git|installed|differs|missing|conflict), top, codex_ok, plan,
-# conflicts, hooks_ok (core.hooksPath already points at .githooks), extra
-# (other hooks .githooks/ would activate), and the needs_* flags. Changes
+# conflicts, hooks_ok (core.hooksPath already points at .githooks), hooks_dir
+# (core.hooksPath as git resolves it), extra (other hooks .githooks/ would
+# activate), and the needs_* flags. Changes
 # the cwd to the work-tree root.
 detect() {
   state='' plan='' conflicts='' extra=''
   needs_config=0 needs_file=0 needs_upgrade=0 needs_chmod=0
-  hooks_ok=0 codex_ok=0 default_dir=''
+  hooks_ok=0 codex_ok=0 default_dir='' hooks_dir=''
   command -v codex >/dev/null 2>&1 && codex_ok=1
 
   top=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -50,6 +51,8 @@ detect() {
   fi
 
   hooks_path=$(git config --get core.hooksPath)
+  # git expands ~ and resolves a relative path against the work-tree root.
+  [ -n "$hooks_path" ] && hooks_dir=$(git rev-parse --git-path hooks)
   case $hooks_path in
     .githooks | .githooks/ | ./.githooks | ./.githooks/ | "$top/.githooks" | "$top/.githooks/")
       hooks_ok=1
@@ -176,9 +179,17 @@ local_active() {
   [ -n "$default_dir" ] && is_gate "$default_dir/pre-commit" && [ -x "$default_dir/pre-commit" ]
 }
 
+# core.hooksPath points somewhere other than this work tree's .githooks, such
+# as a worktree sharing the main checkout's absolute .githooks, and git runs a
+# codex-review gate from there. Run after detect.
+path_active() {
+  [ "$hooks_ok" = 0 ] && [ -n "$hooks_dir" ] &&
+    is_gate "$hooks_dir/pre-commit" && [ -x "$hooks_dir/pre-commit" ]
+}
+
 # git runs a codex-review gate for this clone. Run after detect.
 gate_active() {
-  { [ "$hooks_ok" = 1 ] && [ -x .githooks/pre-commit ]; } || local_active
+  { [ "$hooks_ok" = 1 ] && [ -x .githooks/pre-commit ]; } || local_active || path_active
 }
 
 # Activating unasked runs only the plugin's own bundled gate, from the clone's
@@ -268,6 +279,7 @@ run_hook() {
     fi
   fi
   gate_shipped && local_active && exit 0
+  path_active && exit 0
   silence="If the user is not interested, suggest 'git config codex-review.skipInit true' (or --global) to stop this notice."
   shipped_note=''
   if guard_blocks; then
@@ -310,6 +322,7 @@ run_check() {
     echo "codex: NOT FOUND on PATH; install with 'npm install -g @openai/codex', then run 'codex login'"
   fi
   local_active && echo "clone: the plugin's own gate runs from $default_dir/pre-commit (activated because the repository ships the gate)"
+  path_active && echo "clone: a codex-review gate runs from $hooks_dir/pre-commit (core.hooksPath)"
   # Teammates' Claude Code offers the plugin when the repository enables it
   # and names its marketplace.
   settings=.claude/settings.json

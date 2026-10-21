@@ -493,6 +493,38 @@ describe("guard blocks Claude's commits while a shipped gate is inactive", () =>
     expect(guard(repo, "git commit -m x").out).toBe("");
   });
 
+  // A worktree of a shipped repository; core.hooksPath is set in the config all worktrees share.
+  function shippedWorktree(hooksPath: (main: string) => string): { main: string; tree: string } {
+    const main = shippedRepo();
+    git(main, "add", ".githooks/pre-commit");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--no-verify", "-m", "gate");
+    const tree = join(scratch, `tree-${++seq}`);
+    git(main, "worktree", "add", "-q", tree);
+    git(main, "config", "core.hooksPath", hooksPath(main));
+    return { main, tree };
+  }
+
+  test("allows commits in a worktree whose core.hooksPath is the main checkout's absolute .githooks", () => {
+    const { main, tree } = shippedWorktree((main) => join(main, ".githooks"));
+    expect(guard(tree, "git commit -m x").out).toBe("");
+    expect(gate("hook", tree).out).toBe("");
+    expect(gate("check", tree).out).toContain(`clone: a codex-review gate runs from ${join(main, ".githooks")}/pre-commit`);
+  });
+
+  test("still denies in a worktree whose core.hooksPath has no gate", () => {
+    const { main, tree } = shippedWorktree((main) => join(main, ".husky"));
+    mkdirSync(join(main, ".husky"));
+    writeFileSync(join(main, ".husky", "pre-commit"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(main, ".husky", "pre-commit"), 0o755);
+    expect(denied(guard(tree, "git commit -m x"))).toBe(true);
+  });
+
+  test("a non-executable gate behind core.hooksPath is not active", () => {
+    const { main, tree } = shippedWorktree((main) => join(main, ".githooks"));
+    chmodSync(join(main, ".githooks", "pre-commit"), 0o644);
+    expect(denied(guard(tree, "git commit -m x"))).toBe(true);
+  });
+
   test("stays out of repositories that do not ship the gate", () => {
     expect(guard(newRepo(), "git commit -m x").out).toBe("");
     const plain = join(scratch, `plain-${++seq}`);
