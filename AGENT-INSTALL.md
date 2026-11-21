@@ -67,7 +67,7 @@ Commit `.githooks/pre-commit` to the repo so it travels with clones; each fresh 
 
 1. `.claude/skills/codex-review/SKILL.md` exists and `codex` is on `PATH`.
 2. `git config core.hooksPath` prints `.githooks`, and `.githooks/pre-commit` is executable.
-3. Summarize what changed and how a **human** bypasses in an emergency: `git commit --no-verify` or `CODEX_GATE_BYPASS=1 git commit …` — visible, deliberate, not for skipping fixes. Note that a local hook is honor-limited (anyone with shell access can `--no-verify` or unset `core.hooksPath`); for a hard guarantee, enforce **server-side** (branch protection + a required check, or a `pre-receive` hook). **Do not** run a codex review just to test the install — a smoke test spends a real codex call. Only do so if the user asks.
+3. Summarize what changed and how a **human** bypasses in an emergency: `git commit --no-verify` or `CODEX_GATE_BYPASS=1 git commit …` — visible, deliberate, not for skipping fixes, and never for an agent to use or suggest. Note that a local hook is honor-limited (anyone with shell access can `--no-verify` or unset `core.hooksPath`); for a hard guarantee, enforce **server-side** (branch protection + a required check, or a `pre-receive` hook). **Do not** run a codex review just to test the install — a smoke test spends a real codex call. Only do so if the user asks.
 
 ## Uninstall
 

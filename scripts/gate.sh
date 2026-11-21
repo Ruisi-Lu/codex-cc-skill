@@ -274,7 +274,7 @@ run_hook() {
     if install_local; then
       [ "$was_active" = 1 ] && exit 0
       emit "codex-review: this repository ships the Codex commit gate; activated the plugin's copy in this clone (.git/hooks/pre-commit). Every commit now needs a Codex ALLOW." \
-        "[codex-review plugin] This repository ships the Codex pre-commit review gate, so the plugin activated it in this clone by installing its own bundled copy as the clone's .git/hooks/pre-commit (the repository's .githooks content is not run). Mention this once at a natural point early in the session: every git commit here now runs a Codex review and is blocked unless Codex approves. Never remove the hook or bypass the gate on your own."
+        "[codex-review plugin] This repository ships the Codex pre-commit review gate, so the plugin activated it in this clone by installing its own bundled copy as the clone's .git/hooks/pre-commit (the repository's .githooks content is not run). Mention this once at a natural point early in the session: every git commit here now runs a Codex review and is blocked unless Codex approves. Never remove the hook or bypass the gate on your own. When it blocks a commit, never ask the user to override, bypass or approve it: fix the findings, or put your evidence to Codex as the codex-review skill describes."
       exit 0
     fi
   fi
