@@ -24,6 +24,17 @@
 # can't be recomputed (older git, octopus merge, root commit), the whole staged
 # diff is reviewed instead.
 #
+# The gate's own file (.githooks/pre-commit) is left out of the review when
+# it is staged byte-identical to the gate that is running, so the commit that
+# installs or upgrades it can land: its review prompt would otherwise read as
+# text aimed at the reviewer. That code already decides this commit, so it
+# gains nothing by being left out. Wherever git runs the gate from, though,
+# that file can be edited, and an edit matches itself, so the staged copy must
+# also be the release recorded in the local git config
+# (codex-review.installedGate: the blob id of the plugin's copy, written by
+# /codex-review:init and when the plugin activates its own copy). Any other
+# content at that path, and the same content anywhere else, is reviewed.
+#
 # IMPORTANT — codex is run FULLY ISOLATED from this repo: the staged diff is
 # captured to a temp file, codex's cwd is a throwaway temp dir (-C), and every
 # GIT_* env var that git sets for hooks is unset before codex runs. This is
@@ -50,6 +61,21 @@ agent_on_block="AI agent: do not ask the user to override, bypass or approve thi
 # committed.
 staged_diff() {
   git diff --cached --no-ext-diff --no-textconv --ignore-submodules=none "$@"
+}
+
+# The pathspecs below rely on their magic (:(top), :(exclude)), but
+# `git --literal-pathspecs commit` exports GIT_LITERAL_PATHSPECS to hooks,
+# under which they would be read as plain file names.
+unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+
+# The staged changes the reviewer sees: all of them, minus the gate's own
+# file when it is left out (see the header).
+review_diff() {
+  if [ -n "$self_skip" ]; then
+    staged_diff "$@" -- "$self_skip"
+  else
+    staged_diff "$@"
+  fi
 }
 
 # Nothing staged → nothing to review.
@@ -79,14 +105,46 @@ if [ $# -gt 0 ]; then
     git rev-parse -q --verify "$base^{tree}" >/dev/null || base=''
   fi
 fi
-# Exactly git's own result: the commit introduces nothing new to review.
-[ -n "$base" ] && staged_diff --quiet "$base" && exit 0
+# Whether the staged gate file is left out of the review (see the header).
+# Anything else at that path (another release, a local edit, a symlink or a
+# deletion) is reviewed, and so is everything when this script can't be sure
+# which file it is running from.
+self_path=.githooks/pre-commit
+self_exempt() {
+  case $(git ls-files -s -- ":(top)$self_path") in
+    100644\ * | 100755\ *) ;;
+    *) return 1 ;;
+  esac
+  staged_diff --quiet ${base:+"$base"} -- ":(top)$self_path" && return 1
+  # $0 must name this gate's file: git always runs a hook by a path with a
+  # slash, while `sh -s <gate` would leave a bare name to look up in the cwd.
+  case $0 in */*) ;; *) return 1 ;; esac
+  [ -f "$0" ] && sed -n 2p "$0" | grep -q '^# codex-review gate' || return 1
+  git cat-file blob ":$self_path" 2>/dev/null | cmp -s - "$0" || return 1
+  # Only the recorded release passes. --local ignores `git -c` and
+  # GIT_CONFIG_* values given to this commit.
+  recorded=$(git config --local --get codex-review.installedGate 2>/dev/null)
+  [ -n "$recorded" ] && [ "$(git rev-parse -q --verify ":$self_path")" = "$recorded" ]
+}
+self_skip=''
+if self_exempt; then
+  self_skip=":(top,exclude)$self_path"
+  echo "[codex-review-gate] $self_path is left out of the review: it is the gate that is running." >&2
+fi
+
+# Exactly git's own result, or nothing but this gate itself: the commit
+# introduces nothing new to review.
+if { [ -n "$base" ] || [ -n "$self_skip" ]; } && review_diff --quiet ${base:+"$base"}; then
+  exit 0
+fi
 
 if [ -n "$base" ]; then
   scope="This commit concludes a $op. The diff on stdin is taken against git's own automatic $op result rather than HEAD, so it holds only the conflict resolutions and any further edits (in conflicted hunks, the - side shows git's conflict markers). Review ONLY that diff."
 else
   scope="Review ONLY the staged diff provided on stdin."
 fi
+[ -n "$self_skip" ] &&
+  scope="$scope The staged $self_path is left out of that diff: it is identical to the gate script running this review."
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "[codex-review-gate] commit blocked — codex CLI not found; run 'npm i -g @openai/codex && codex login'." >&2
@@ -103,7 +161,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 # Capture the staged diff while the git environment is still valid. Plain
 # output only: raw content, no color codes from user config.
-if ! staged_diff --no-color ${base:+"$base"} >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
+if ! review_diff --no-color ${base:+"$base"} >"$tmp/staged.diff" || ! [ -s "$tmp/staged.diff" ]; then
   echo "[codex-review-gate] commit blocked — could not capture the staged diff for review ('git diff --cached' failed or printed nothing)." >&2
   echo "$agent_on_error" >&2
   echo "$human_override" >&2

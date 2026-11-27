@@ -59,9 +59,11 @@ curl -fsSL https://raw.githubusercontent.com/Ruisi-Lu/codex-cc-skill/refs/heads/
   -o .githooks/pre-commit
 chmod +x .githooks/pre-commit
 git config core.hooksPath .githooks   # once per clone
+# Record this exact copy, before any edit, so the commit that adds it is not sent for review:
+git config codex-review.installedGate "$(git hash-object --no-filters .githooks/pre-commit)"
 ```
 
-Commit `.githooks/pre-commit` to the repo so it travels with clones; each fresh clone still runs `git config core.hooksPath .githooks` once (git does not adopt `core.hooksPath` automatically).
+Commit `.githooks/pre-commit` to the repo so it travels with clones (commit it unedited: the gate leaves its own file out of the review only when the staged copy is the one that runs and the one recorded above; anything else is reviewed, and the gate's prompt text then reads as an instruction to the reviewer); each fresh clone still runs `git config core.hooksPath .githooks` once (git does not adopt `core.hooksPath` automatically).
 
 ## Step 4 — Verify and hand off
 

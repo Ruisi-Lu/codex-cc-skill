@@ -131,6 +131,37 @@ describe("fresh repository", () => {
     expect(gate("install", repo).out).toContain("already installed");
   });
 
+  test("install records the plugin's gate, so the commit that adds it is not sent for review", () => {
+    const repo = newRepo();
+    expect(gate("check", repo).out).toContain("record that copy's blob id as codex-review.installedGate");
+    const res = gate("install", repo);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain("recorded codex-review.installedGate");
+    const id = git(repo, "hash-object", "--no-filters", GATE_SRC);
+    expect(git(repo, "config", "--local", "--get", "codex-review.installedGate")).toBe(id);
+    // The stub codex writes no verdict, so a review would block this commit.
+    git(repo, "add", ".githooks/pre-commit");
+    const p = Bun.spawnSync(
+      ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "add gate"],
+      { cwd: repo, env: env(repo, true) },
+    );
+    expect(p.stderr.toString()).toContain("left out of the review");
+    expect(p.exitCode).toBe(0);
+    expect(git(repo, "rev-parse", "HEAD:.githooks/pre-commit")).toBe(id);
+  });
+
+  test("install records the gate again when it is already in place", () => {
+    const repo = newRepo();
+    expect(gate("install", repo).code).toBe(0);
+    git(repo, "config", "--local", "--unset", "codex-review.installedGate");
+    const res = gate("install", repo);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain("already installed");
+    expect(git(repo, "config", "--local", "--get", "codex-review.installedGate")).toBe(
+      git(repo, "hash-object", "--no-filters", GATE_SRC),
+    );
+  });
+
   test("works from a subdirectory", () => {
     const repo = newRepo();
     const sub = join(repo, "a", "b");
@@ -368,11 +399,33 @@ describe("a repository that ships the gate activates it in every clone", () => {
     const out = hookJson(gate("hook", repo));
     expect(out.systemMessage).toContain("activated the plugin's copy");
     expect(readFileSync(localHook(repo), "utf8")).toBe(readFileSync(GATE_SRC, "utf8"));
+    expect(git(repo, "config", "--local", "--get", "codex-review.installedGate")).toBe(
+      git(repo, "hash-object", "--no-filters", GATE_SRC),
+    );
     expect(statSync(localHook(repo)).mode & 0o111).not.toBe(0);
     expect(git(repo, "config", "--get", "core.hooksPath")).toBe("");
     expect(gate("check", repo).out).toContain("clone: the plugin's own gate runs from");
     expect(guard(repo, "git commit -m x").out).toBe("");
     expect(gate("hook", repo).out).toBe("");
+  });
+
+  test("the plugin's copy records its release, so committing it to .githooks is not sent for review", () => {
+    const repo = shippedRepo(readFileSync(GATE_SRC, "utf8") + "# older release\n");
+    git(repo, "add", ".githooks/pre-commit");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "older gate");
+    hookJson(gate("hook", repo));
+    // A current copy that lost its record gets it back at the next session start.
+    git(repo, "config", "--local", "--unset", "codex-review.installedGate");
+    expect(gate("hook", repo).out).toBe("");
+    writeFileSync(join(repo, ".githooks", "pre-commit"), readFileSync(GATE_SRC));
+    git(repo, "add", ".githooks/pre-commit");
+    // The stub codex writes no verdict, so a review would block this commit.
+    const p = Bun.spawnSync(
+      ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "upgrade gate"],
+      { cwd: repo, env: env(repo, true) },
+    );
+    expect(p.stderr.toString()).toContain("left out of the review");
+    expect(p.exitCode).toBe(0);
   });
 
   test("never runs repository content: a modified shipped gate and extra hooks stay inert", () => {

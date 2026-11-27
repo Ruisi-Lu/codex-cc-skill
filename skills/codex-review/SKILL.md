@@ -74,6 +74,8 @@ The gate's verdict is a review finding to resolve, not a permission problem. Whe
 
 **If codex itself failed** (not installed, not logged in, a CLI older than 0.119.0, a timeout, no verdict), there was no review to argue with: report the error and its fix (`codex login`, upgrading codex-cli, or a larger `CODEX_GATE_TIMEOUT` for a slow review, which you may set yourself when retrying).
 
+**If the finding is about `.githooks/pre-commit` itself**, the staged gate is not the copy the gate leaves out of the review: one byte-identical to the gate that is running and to the release recorded in `codex-review.installedGate`. Install or upgrade it through `/codex-review:init` (or, without the plugin, the README's steps) and commit it unedited; where the plugin runs its own copy from `.git/hooks`, a staged copy identical to the plugin's `hooks/pre-commit` qualifies too. Never edit the gate, or record an edited copy, to get it past the review.
+
 **If Codex returned `BLOCK:`**, check each finding against the code yourself:
 
 1. **The finding holds** → fix it in the change you are committing, re-stage, and commit again. (Fixing your own staged change is part of finishing the commit; the on-demand review's no-auto-fix rule below covers reviews the user asked for.)

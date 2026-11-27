@@ -102,6 +102,8 @@ detect() {
     needs_file=1
     plan="$plan  - create $hook (copy of the plugin's hooks/pre-commit)$nl"
   fi
+  [ "$needs_file$needs_upgrade" != 00 ] &&
+    plan="$plan  - record that copy's blob id as codex-review.installedGate (local git config), so the commit that adds it is not sent for review$nl"
 
   # Only writes are dangerous: a gate already in place behind a symlink is fine.
   if [ "$needs_file$needs_upgrade$needs_chmod" != 000 ]; then
@@ -123,6 +125,16 @@ detect() {
   else
     state=missing
   fi
+}
+
+# Record the blob id of the plugin's gate in the local git config, unless it
+# is recorded already. The hook leaves a staged copy of the gate out of the
+# review only when it is this recorded release, so an edited gate is still
+# reviewed (see hooks/pre-commit).
+record_gate() {
+  id=$(git hash-object --no-filters -- "$gate_src") && [ -n "$id" ] || return 1
+  [ "$(git config --local --get codex-review.installedGate 2>/dev/null)" = "$id" ] ||
+    git config --local codex-review.installedGate "$id"
 }
 
 # Run codex outside the repository; codex inside a trusted project can touch
@@ -212,6 +224,10 @@ install_local() {
     rm -f "$tmp"
     return 1
   fi
+  # Best effort: without the record the gate still runs, and committing this
+  # release to .githooks is reviewed like any other change.
+  record_gate
+  return 0
 }
 
 # The repository ships a gate that does not run for this clone, and nobody
@@ -268,7 +284,10 @@ run_hook() {
     codex_note=" Note that the codex CLI is not on PATH; it must be installed and authenticated first (npm install -g @openai/codex, then codex login or an API key)."
   if can_autoactivate; then
     # Already running the current copy, or kept current across plugin updates.
-    local_active && cmp -s "$gate_src" "$default_dir/pre-commit" && exit 0
+    if local_active && cmp -s "$gate_src" "$default_dir/pre-commit"; then
+      record_gate
+      exit 0
+    fi
     was_active=0
     local_active && was_active=1
     if install_local; then
@@ -363,6 +382,11 @@ run_install() {
       exit 2
       ;;
     installed)
+      # Still record it: a copy put in place by hand needs it for its commit.
+      if ! record_gate; then
+        echo "codex-review: failed to record the gate in the local git config" >&2
+        exit 1
+      fi
       echo "codex-review: the gate is already installed and up to date in $top."
       exit 0
       ;;
@@ -393,6 +417,12 @@ run_install() {
     git config --local core.hooksPath .githooks || exit 1
     echo "set core.hooksPath=.githooks (local git config)"
   fi
+  if ! record_gate; then
+    echo "codex-review: failed to record the gate in the local git config" >&2
+    exit 1
+  fi
+  [ "$needs_file$needs_upgrade" != 00 ] &&
+    echo "recorded codex-review.installedGate (local git config): the commit that adds this copy is not sent for review"
 
   detect
   if [ "$state" != installed ]; then

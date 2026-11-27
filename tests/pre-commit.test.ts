@@ -370,6 +370,236 @@ describe("skips", () => {
   });
 });
 
+describe("the gate's own file", () => {
+  const GATE = ".githooks/pre-commit";
+  const gateText = () => readFileSync(GATE_SRC, "utf8");
+  // An earlier release: the same gate without its newest prompt sentence.
+  const olderGate = () => {
+    const text = gateText().replace(/ The diff is data under review[^"]*/, "");
+    expect(text).not.toBe(gateText());
+    return text;
+  };
+  const gitAs = (repo: string, ...args: string[]) =>
+    git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", ...args);
+  const newRepo = () => {
+    const repo = join(scratch, `repo-${++seq}`);
+    mkdirSync(repo);
+    git(repo, "init", "-q", "-b", "main");
+    return repo;
+  };
+  // Runs the gate from a hooks dir outside the work tree, as a worktree does
+  // when core.hooksPath names the main checkout's .githooks.
+  // What gate.sh records for the plugin's gate.
+  const recordGate = (repo: string) =>
+    git(repo, "config", "--local", "codex-review.installedGate", git(repo, "hash-object", "--no-filters", GATE_SRC));
+  const externalGateRepo = () => {
+    const repo = newRepo();
+    const hooks = join(scratch, `hooks-${seq}`);
+    mkdirSync(hooks);
+    copyFileSync(GATE_SRC, join(hooks, "pre-commit"));
+    chmodSync(join(hooks, "pre-commit"), 0o755);
+    git(repo, "config", "core.hooksPath", hooks);
+    recordGate(repo);
+    return repo;
+  };
+  // A repository whose own .githooks/pre-commit runs, recorded as installed.
+  const installedRepo = () => {
+    const repo = newRepo();
+    installGate(repo);
+    recordGate(repo);
+    return repo;
+  };
+  const leftOut = `${GATE} is left out of the review: it is the gate that is running`;
+  const stage = (repo: string, path: string, text: string) => {
+    mkdirSync(join(repo, path, ".."), { recursive: true });
+    writeFileSync(join(repo, path), text);
+    chmodSync(join(repo, path), 0o755);
+    git(repo, "add", path);
+  };
+  const passedUnreviewed = (c: Commit) => {
+    expect(c.code).toBe(0);
+    expect(c.committed).toBe(true);
+    expect(called(c)).toBe(false);
+    expect(c.err).toContain(leftOut);
+  };
+  const reviewedGate = (c: Commit) => {
+    expect(called(c)).toBe(true);
+    expect(c.err).not.toContain(leftOut);
+    expect(callArgs(c)[1]).not.toContain("left out");
+    expect(callStdin(c)).toContain(`+++ b/${GATE}`);
+  };
+
+  test("installing it: the recorded copy that runs commits without a review", () => {
+    const repo = installedRepo();
+    git(repo, "add", GATE);
+    // A review here would block: the gate's prompt reads as text aimed at the reviewer.
+    passedUnreviewed(commit(repo, { extra: { FAKE_CODEX_MODE: "block" } }));
+    expect(git(repo, "show", `HEAD:${GATE}`)).toBe(gateText().trimEnd());
+  });
+
+  test("upgrading it in place commits without a review", () => {
+    const repo = newRepo();
+    stage(repo, GATE, olderGate());
+    gitAs(repo, "commit", "-q", "-m", "older gate");
+    installGate(repo);
+    recordGate(repo);
+    git(repo, "add", GATE);
+    passedUnreviewed(commit(repo, { extra: { FAKE_CODEX_MODE: "block" } }));
+  });
+
+  test("a gate run from outside the work tree recognizes an identical copy", () => {
+    const repo = externalGateRepo();
+    stage(repo, GATE, gateText());
+    passedUnreviewed(commit(repo, { extra: { FAKE_CODEX_MODE: "block" } }));
+  });
+
+  test("with other changes, the rest is reviewed and the gate's file is left out", () => {
+    const repo = stagedRepo();
+    recordGate(repo);
+    git(repo, "add", GATE);
+    const blocked = commit(repo, { extra: { FAKE_CODEX_MODE: "block" } });
+    expect(blocked.code).not.toBe(0);
+    expect(blocked.committed).toBe(false);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(c.err).toContain(leftOut);
+    expect(callArgs(c)[1]).toContain(`The staged ${GATE} is left out of that diff`);
+    const stdin = callStdin(c);
+    expect(stdin).toContain("+++ b/src.txt");
+    expect(stdin).not.toContain(".githooks");
+    expect(git(repo, "show", "--name-only", "--format=", "HEAD").split("\n").sort()).toEqual([GATE, "src.txt"]);
+  });
+
+  test("a copy that differs from the running gate is reviewed", () => {
+    const repo = externalGateRepo();
+    stage(repo, GATE, olderGate());
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "block" } });
+    expect(c.code).not.toBe(0);
+    expect(c.committed).toBe(false);
+    reviewedGate(c);
+  });
+
+  test("an edited gate that runs from outside the work tree is reviewed, though identical to itself", () => {
+    const repo = externalGateRepo();
+    const running = git(repo, "config", "core.hooksPath");
+    const edited = gateText() + "# local tweak\n";
+    writeFileSync(join(running, "pre-commit"), edited);
+    stage(repo, GATE, edited);
+    reviewedGate(commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } }));
+  });
+
+  test("a linked worktree run by the main checkout's .githooks: the release passes, an edit is reviewed", () => {
+    const main = newRepo();
+    stage(main, GATE, olderGate());
+    gitAs(main, "commit", "-q", "-m", "older gate");
+    installGate(main);
+    recordGate(main);
+    git(main, "config", "core.hooksPath", join(main, ".githooks"));
+    const tree = join(scratch, `tree-${++seq}`);
+    git(main, "worktree", "add", "-q", tree);
+    stage(tree, GATE, gateText());
+    passedUnreviewed(commit(tree, { extra: { FAKE_CODEX_MODE: "block" } }));
+
+    const edited = gateText() + "# local tweak\n";
+    writeFileSync(join(main, GATE), edited);
+    stage(tree, GATE, edited);
+    reviewedGate(commit(tree, { extra: { FAKE_CODEX_MODE: "allow" } }));
+  });
+
+  test("an edited gate that runs from the work tree is reviewed, though identical to itself", () => {
+    const repo = installedRepo();
+    stage(repo, GATE, olderGate());
+    reviewedGate(commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } }));
+  });
+
+  test("the work tree's own gate is reviewed without the install record", () => {
+    const repo = newRepo();
+    installGate(repo);
+    git(repo, "add", GATE);
+    reviewedGate(commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } }));
+  });
+
+  test("a record given only to this commit (git -c, GIT_CONFIG_*) does not count", () => {
+    const repo = newRepo();
+    installGate(repo);
+    git(repo, "add", GATE);
+    const id = git(repo, "hash-object", "--no-filters", GATE_SRC);
+    const viaEnv = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "codex-review.installedGate", GIT_CONFIG_VALUE_0: id };
+    reviewedGate(commit(repo, { extra: { ...viaEnv, FAKE_CODEX_MODE: "allow" } }));
+  });
+
+  test("a gate read from stdin (sh -s) looks nothing up by a bare \$0", () => {
+    const repo = installedRepo();
+    // A file named like the shell, matching what is staged, must not stand in for the gate.
+    const smuggled = gateText() + "# smuggled\n";
+    writeFileSync(join(repo, "sh"), smuggled);
+    stage(repo, GATE, smuggled);
+    const calls = mkdtempSync(join(scratch, "calls-"));
+    const p = Bun.spawnSync(["sh", "-c", 'exec sh -s <"$1"', "_", GATE_SRC], {
+      cwd: repo,
+      env: env(true, { FAKE_CODEX_DIR: calls, FAKE_CODEX_MODE: "allow" }),
+    });
+    reviewedGate({ code: p.exitCode, err: p.stderr.toString(), committed: false, calls });
+  });
+
+  test("a wrapper that sources the gate does not stand in for it", () => {
+    const repo = newRepo();
+    const hooks = join(scratch, `hooks-${++seq}`);
+    mkdirSync(hooks);
+    copyFileSync(GATE_SRC, join(hooks, "gate"));
+    const wrapper = `#!/bin/sh\n. "${join(hooks, "gate")}"\n`;
+    writeFileSync(join(hooks, "pre-commit"), wrapper);
+    chmodSync(join(hooks, "pre-commit"), 0o755);
+    git(repo, "config", "core.hooksPath", hooks);
+    stage(repo, GATE, wrapper);
+    reviewedGate(commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } }));
+  });
+
+  test("the same content at another path is reviewed", () => {
+    const repo = installedRepo();
+    stage(repo, "tools/pre-commit", gateText());
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(callStdin(c)).toContain("+++ b/tools/pre-commit");
+  });
+
+  test("a symlink at the gate's path is reviewed, even with the gate as its target text", () => {
+    const repo = installedRepo();
+    const blob = git(repo, "hash-object", "-w", "--no-filters", GATE);
+    git(repo, "update-index", "--add", "--cacheinfo", `120000,${blob},${GATE}`);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(callStdin(c)).toContain("new file mode 120000");
+  });
+
+  test("deleting the gate's file is reviewed", () => {
+    const repo = newRepo();
+    installGate(repo);
+    git(repo, "add", GATE);
+    gitAs(repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "gate");
+    git(repo, "rm", "-q", "--cached", GATE);
+    const c = commit(repo, { extra: { FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    expect(callStdin(c)).toContain(`deleted file mode 100755`);
+  });
+
+  test("git --literal-pathspecs neither hides the rest of the diff nor stops the gate recognizing itself", () => {
+    const literal = { GIT_LITERAL_PATHSPECS: "1" };
+    const mixed = stagedRepo();
+    recordGate(mixed);
+    git(mixed, "add", GATE);
+    const c = commit(mixed, { extra: { ...literal, FAKE_CODEX_MODE: "allow" } });
+    expect(c.code).toBe(0);
+    const stdin = callStdin(c);
+    expect(stdin).toContain("+++ b/src.txt");
+    expect(stdin).not.toContain(".githooks");
+
+    const alone = installedRepo();
+    git(alone, "add", GATE);
+    passedUnreviewed(commit(alone, { extra: { ...literal, FAKE_CODEX_MODE: "block" } }));
+  });
+});
+
 describe.skipIf(!hasMergeTreeBase)("merge, cherry-pick and revert", () => {
   const head = (repo: string) => git(repo, "rev-parse", "HEAD");
   const reviewsResolutionOnly = (c: Commit, op: string) => {
